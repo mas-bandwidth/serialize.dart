@@ -798,20 +798,17 @@ final class ReadStream implements BitStream {
   /// remainder.
   bool serializeBits64(Ref<int> value, int bits) {
     assert(bits >= 1 && bits <= 64);
+    // one bounds check for the whole group: the two reads are sequential on
+    // the same stream, so checking their sum accepts and refuses exactly the
+    // same inputs as checking each in turn
+    if (_reader.wouldReadPastEnd(bits)) {
+      return false;
+    }
     if (bits <= 32) {
-      if (_reader.wouldReadPastEnd(bits)) {
-        return false;
-      }
       value.value = _reader.readBits(bits);
       return true;
     }
-    if (_reader.wouldReadPastEnd(32)) {
-      return false;
-    }
     final lo = _reader.readBits(32);
-    if (_reader.wouldReadPastEnd(bits - 32)) {
-      return false;
-    }
     final hi = _reader.readBits(bits - 32);
     value.value = (hi << 32) | lo;
     return true;
@@ -928,24 +925,16 @@ final class ReadStream implements BitStream {
   /// Reads an unsigned 128-bit integer: the low 64-bit half first, then the
   /// high half, each half as serialize_bits(half, 64).
   bool serializeUint128(Ref<UInt128> value) {
-    var lo = 0;
-    var hi = 0;
-    for (var half = 0; half < 2; half++) {
-      if (_reader.wouldReadPastEnd(32)) {
-        return false;
-      }
-      final low = _reader.readBits(32);
-      if (_reader.wouldReadPastEnd(32)) {
-        return false;
-      }
-      final high = _reader.readBits(32);
-      if (half == 0) {
-        lo = (high << 32) | low;
-      } else {
-        hi = (high << 32) | low;
-      }
+    // one bounds check for all four groups: the reads are sequential on the
+    // same stream, so checking their sum refuses exactly the same inputs
+    if (_reader.wouldReadPastEnd(128)) {
+      return false;
     }
-    value.value = UInt128(hi, lo);
+    final loLow = _reader.readBits(32);
+    final loHigh = _reader.readBits(32);
+    final hiLow = _reader.readBits(32);
+    final hiHigh = _reader.readBits(32);
+    value.value = UInt128((hiHigh << 32) | hiLow, (loHigh << 32) | loLow);
     return true;
   }
 
@@ -970,13 +959,12 @@ final class ReadStream implements BitStream {
 
   /// Reads a bit-transparent double.
   bool serializeDouble(Ref<double> value) {
-    if (_reader.wouldReadPastEnd(32)) {
+    // one bounds check for both groups: the reads are sequential on the same
+    // stream, so checking their sum refuses exactly the same inputs
+    if (_reader.wouldReadPastEnd(64)) {
       return false;
     }
     final lo = _reader.readBits(32);
-    if (_reader.wouldReadPastEnd(32)) {
-      return false;
-    }
     final hi = _reader.readBits(32);
     value.value = doubleFromFloat64Bits((hi << 32) | lo);
     return true;

@@ -32,8 +32,11 @@ final class BitWriter {
   int _scratch; // the 64-bit scratch, bits packed from the bottom
   int _scratchBits; // number of valid bits in scratch, in [0,63]
   int _numBits; // buffer capacity in bits
-  int _bitsWritten; // bits written so far
   int _wordIndex; // the next 8-byte word flushes to _data[_wordIndex * 8]
+
+  // The bit index is not a stored field: it is _wordIndex * 64 + _scratchBits
+  // by construction — every write path maintains that invariant — so the hot
+  // path carries one less field update per write (see [bitsWritten]).
 
   /// Creates a bit writer that fills [buffer] with bitpacked data. The buffer
   /// length must be a multiple of 8.
@@ -43,7 +46,6 @@ final class BitWriter {
       _scratch = 0,
       _scratchBits = 0,
       _numBits = buffer.length * 8,
-      _bitsWritten = 0,
       _wordIndex = 0 {
     assert(buffer.length % 8 == 0);
   }
@@ -60,7 +62,6 @@ final class BitWriter {
     _scratch = 0;
     _scratchBits = 0;
     _numBits = buffer.length * 8;
-    _bitsWritten = 0;
     _wordIndex = 0;
   }
 
@@ -69,12 +70,14 @@ final class BitWriter {
   /// are ignored (the uint32 conversion the C#, Go and JavaScript ports
   /// perform at this boundary). Writing past the end of the buffer is a
   /// caller contract violation, asserted in debug.
+  @pragma('vm:prefer-inline')
   void writeBits(int value, int bits) {
     assert(bits >= 1 && bits <= 32);
-    assert(_bitsWritten + bits <= _numBits);
+    assert(bitsWritten + bits <= _numBits);
 
-    // mask to the bit count: bits of value above the count are ignored
-    value &= bits == 32 ? 0xFFFFFFFF : (1 << bits) - 1;
+    // mask to the bit count: bits of value above the count are ignored.
+    // branchless: the int is 64 bits wide, so 1 << 32 does not overflow
+    value &= (1 << bits) - 1;
 
     _scratch |= value << _scratchBits;
 
@@ -90,17 +93,15 @@ final class BitWriter {
     } else {
       _scratchBits = newScratchBits;
     }
-
-    _bitsWritten += bits;
   }
 
   /// Pads the bit stream with zeros so the bit index becomes a multiple of 8.
   /// If the current bit index is already a multiple of 8, nothing is written.
   void writeAlign() {
-    final remainderBits = _bitsWritten % 8;
+    final remainderBits = _scratchBits & 7; // == bitsWritten % 8
     if (remainderBits != 0) {
       writeBits(0, 8 - remainderBits);
-      assert(_bitsWritten % 8 == 0);
+      assert(bitsWritten % 8 == 0);
     }
   }
 
@@ -116,9 +117,9 @@ final class BitWriter {
   /// as if its bytes had gone through the packer.
   void writeBytes(Uint8List data) {
     final bytes = data.length;
-    assert(_bitsWritten % 8 == 0);
-    assert(_bitsWritten + bytes * 8 <= _numBits);
-    assert(_scratchBits == _bitsWritten % 64);
+    final startBits = bitsWritten;
+    assert(startBits % 8 == 0);
+    assert(startBits + bytes * 8 <= _numBits);
 
     // the head: one word store, not a byte loop. the buffer size is a
     // multiple of 8, so the word store stays in bounds (see flushBits).
@@ -127,15 +128,15 @@ final class BitWriter {
     }
 
     // the body: the whole payload, straight in at the byte cursor
-    _data.setRange(_bitsWritten >>> 3, (_bitsWritten >>> 3) + bytes, data);
+    _data.setRange(startBits >>> 3, (startBits >>> 3) + bytes, data);
 
-    _bitsWritten += bytes * 8;
-    _wordIndex = _bitsWritten ~/ 64;
+    final newBits = startBits + bytes * 8;
+    _wordIndex = newBits >>> 6;
 
     // the tail: reload the trailing partial word into the scratch, masked to
     // its tail bits. the load reads only the word the final flush is already
     // obliged to store, so it touches no memory the stream does not own.
-    final tailBits = _bitsWritten % 64;
+    final tailBits = newBits & 63;
     if (tailBits != 0) {
       _scratch =
           _view.getUint64(_wordIndex * 8, Endian.little) &
@@ -153,32 +154,31 @@ final class BitWriter {
   ///
   /// flushBits ends the write: writing more bits after a mid-stream flush
   /// corrupts the stream, because the flushed partial word cannot be resumed.
+  @pragma('vm:prefer-inline')
   void flushBits() {
     if (_scratchBits != 0) {
-      assert(_scratchBits < 64);
       _view.setUint64(_wordIndex * 8, _scratch, Endian.little);
-      _scratch = 0;
-      _scratchBits = 0;
-      _wordIndex++;
     }
   }
 
   /// The number of align bits that would be written, if an align was written
   /// right now: in [0,7], where 0 means the stream is already byte aligned.
-  int get alignBits => (8 - (_bitsWritten % 8)) % 8;
+  int get alignBits => (8 - (_scratchBits & 7)) & 7;
 
   /// The number of bits written so far.
-  int get bitsWritten => _bitsWritten;
+  @pragma('vm:prefer-inline')
+  int get bitsWritten => _wordIndex * 64 + _scratchBits;
 
   /// The number of bits still available to write.
-  int get bitsAvailable => _numBits - _bitsWritten;
+  @pragma('vm:prefer-inline')
+  int get bitsAvailable => _numBits - bitsWritten;
 
   /// The number of bytes flushed to memory: the bits written rounded up to
   /// the next byte. This is the size of the packet to send after bitpacking.
   ///
   /// IMPORTANT: Call [flushBits] first, otherwise you risk missing the last
   /// word of data.
-  int get bytesWritten => (_bitsWritten + 7) ~/ 8;
+  int get bytesWritten => (bitsWritten + 7) >>> 3;
 
   /// The written portion of the buffer: a view of the first [bytesWritten]
   /// bytes of the buffer passed to the writer (not a copy).
@@ -255,6 +255,7 @@ final class BitReader {
   }
 
   /// Would reading [bits] more bits read past the end of the data?
+  @pragma('vm:prefer-inline')
   bool wouldReadPastEnd(int bits) => _bitsRead + bits > _numBits;
 
   /// Reads [bits] bits from the buffer and returns the integer value read,
@@ -263,6 +264,7 @@ final class BitReader {
   /// trusted-caller form. Check [wouldReadPastEnd] first when the data is
   /// untrusted; the stream layer does exactly that and never calls this past
   /// the end.
+  @pragma('vm:prefer-inline')
   int readBits(int bits) {
     assert(bits >= 1 && bits <= 32);
     assert(_bitsRead + bits <= _numBits);
@@ -286,7 +288,8 @@ final class BitReader {
 
     _bitsRead += bits;
 
-    return (window >>> shift) & (bits == 32 ? 0xFFFFFFFF : (1 << bits) - 1);
+    // branchless mask: the int is 64 bits wide, so 1 << 32 does not overflow
+    return (window >>> shift) & ((1 << bits) - 1);
   }
 
   /// Reads an align, corresponding to a writeAlign call when the buffer was

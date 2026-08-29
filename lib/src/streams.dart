@@ -429,12 +429,12 @@ final class WriteStream implements BitStream {
     assert(min <= max);
     assert(value.value >= min);
     assert(value.value <= max);
-    // the diff is exact: int32 bounds keep max - min within [0, 2^32 - 1],
-    // the unsigned domain the reference's bits_required computes in
-    final bits = min == max ? 0 : (max - min).bitLength;
-    if (bits == 0) {
+    if (min == max) {
       return true; // degenerate range: the value IS the range, nothing to send
     }
+    // the diff is exact: int32 bounds keep max - min within [0, 2^32 - 1],
+    // the unsigned domain the reference's bits_required computes in
+    final bits = (max - min).bitLength;
     // subtract in the unsigned domain: wraps when the range is wider than 2^31
     final unsignedValue = (value.value - min) & 0xFFFFFFFF;
     _writer.writeBits(unsignedValue, bits);
@@ -819,12 +819,12 @@ final class ReadStream implements BitStream {
   /// into the bit headroom is refused.
   bool serializeInt(Ref<int> value, int min, int max) {
     assert(min <= max);
-    // the diff is exact: int32 bounds keep max - min within [0, 2^32 - 1]
-    final bits = min == max ? 0 : (max - min).bitLength;
-    if (bits == 0) {
+    if (min == max) {
       value.value = min; // degenerate range: the value IS the range
       return true;
     }
+    // the diff is exact: int32 bounds keep max - min within [0, 2^32 - 1]
+    final bits = (max - min).bitLength;
     if (_reader.wouldReadPastEnd(bits)) {
       return false;
     }

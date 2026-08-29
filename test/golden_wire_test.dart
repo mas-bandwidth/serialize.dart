@@ -118,8 +118,10 @@ final class GoldenData {
     // -98765432109.066 in Q112.16: 75 bits on the wire, three groups
     fixedQ112x16Wide.value = Int128.fromInt(-(98765432109 * 65536 + 4321));
     // Q64.64 over the full unit range: 128 bits, four groups, all distinct
-    fixedQ64x64Wide.value =
-        const Int128(0x0123456789ABCDEF, 0x0FEDCBA987654321);
+    fixedQ64x64Wide.value = const Int128(
+      0x0123456789ABCDEF,
+      0x0FEDCBA987654321,
+    );
   }
 }
 
@@ -136,7 +138,11 @@ bool serializeGoldenWire(BitStream stream, GoldenData data) {
       stream.serializeBool(data.flag) &&
       stream.serializeFloat(data.floatValue) &&
       stream.serializeCompressedFloat(
-          data.compressedFloatValue, 0.0, 10.0, 0.01) &&
+        data.compressedFloatValue,
+        0.0,
+        10.0,
+        0.01,
+      ) &&
       stream.serializeDouble(data.doubleValue) &&
       stream.serializeUint8(data.uint8Value) &&
       stream.serializeUint16(data.uint16Value) &&
@@ -158,11 +164,21 @@ bool serializeGoldenWire(BitStream stream, GoldenData data) {
       // the wide fixed section starts byte aligned as well
       stream.serializeAlign() &&
       // +-2^57 units: 75 bits, the three-group structure
-      stream.serializeFixed128(data.fixedQ112x16Wide, 112, 16,
-          -144115188075855872, 144115188075855872) &&
+      stream.serializeFixed128(
+        data.fixedQ112x16Wide,
+        112,
+        16,
+        -144115188075855872,
+        144115188075855872,
+      ) &&
       // full unit range: 128 bits, the four-group structure
       stream.serializeFixed128(
-          data.fixedQ64x64Wide, 64, 64, int64Min, int64Max);
+        data.fixedQ64x64Wide,
+        64,
+        64,
+        int64Min,
+        int64Max,
+      );
 }
 
 bool _sameDouble(double a, double b) =>
@@ -182,7 +198,9 @@ bool matchesGolden(GoldenData a, GoldenData b) {
   if (a.flag.value != b.flag.value) return false;
   if (!_sameDouble(a.floatValue.value, b.floatValue.value)) return false;
   if (!_sameDouble(
-      a.compressedFloatValue.value, b.compressedFloatValue.value)) {
+    a.compressedFloatValue.value,
+    b.compressedFloatValue.value,
+  )) {
     return false;
   }
   if (!_sameDouble(a.doubleValue.value, b.doubleValue.value)) return false;
@@ -211,11 +229,16 @@ bool matchesGolden(GoldenData a, GoldenData b) {
 void run() {
   test('write side: the golden values produce exactly the golden bytes', () {
     final writer = WriteStream(Uint8List(256));
-    expect(serializeGoldenWire(writer, GoldenData.golden()),
-        'the golden write refused');
+    expect(
+      serializeGoldenWire(writer, GoldenData.golden()),
+      'the golden write refused',
+    );
     writer.flush();
-    expectEquals(writer.bytesProcessed, goldenWireBytes.length,
-        'bytes processed');
+    expectEquals(
+      writer.bytesProcessed,
+      goldenWireBytes.length,
+      'bytes processed',
+    );
     expectEquals(writer.bitsProcessed, goldenBits, 'bits processed');
     expectBytes(writer.data(), goldenWireBytes, 'golden wire bytes');
   });
@@ -225,8 +248,10 @@ void run() {
     final data = GoldenData();
     expect(serializeGoldenWire(reader, data), 'the golden read refused');
     expectEquals(reader.bitsProcessed, goldenBits, 'bits processed');
-    expect(matchesGolden(data, GoldenData.golden()),
-        'decoded values do not match the golden values');
+    expect(
+      matchesGolden(data, GoldenData.golden()),
+      'decoded values do not match the golden values',
+    );
   });
 
   test('trailing bits: writer zeroes them, reader is indifferent', () {
@@ -244,8 +269,11 @@ void run() {
     expectEquals(bitsInFinalByte, 3, 'the stream really does end unaligned');
     final trailingMask = (0xFF << bitsInFinalByte) & 0xFF;
     final data = writer.data();
-    expectEquals(data[bytesWritten - 1] & trailingMask, 0,
-        'writers must write zero');
+    expectEquals(
+      data[bytesWritten - 1] & trailingMask,
+      0,
+      'writers must write zero',
+    );
 
     // reader indifference, small stream: set every trailing bit and read
     // back. the doctored stream must be accepted and decode the same values.
@@ -263,8 +291,11 @@ void run() {
     final bitsInFinalByte = goldenBits % 8;
     expect(bitsInFinalByte != 0, 'golden ends unaligned: can discriminate');
     final trailingMask = (0xFF << bitsInFinalByte) & 0xFF;
-    expectEquals(goldenWireBytes[goldenWireBytes.length - 1] & trailingMask, 0,
-        'the pinned emission met the writer obligation');
+    expectEquals(
+      goldenWireBytes[goldenWireBytes.length - 1] & trailingMask,
+      0,
+      'the pinned emission met the writer obligation',
+    );
 
     final doctored = Uint8List.fromList(goldenWireBytes);
     doctored[doctored.length - 1] |= trailingMask; // set every trailing bit
@@ -272,13 +303,14 @@ void run() {
     final reader = ReadStream(doctored);
     final data = GoldenData();
     expect(serializeGoldenWire(reader, data), 'readers must not reject');
-    expect(matchesGolden(data, GoldenData.golden()),
-        'and must decode identically');
+    expect(
+      matchesGolden(data, GoldenData.golden()),
+      'and must decode identically',
+    );
     expectEquals(reader.bitsProcessed, goldenBits, 'bits processed');
   });
 
-  test('past-end poison: bytes past the stream end are never interpreted',
-      () {
+  test('past-end poison: bytes past the stream end are never interpreted', () {
     // accept path: the golden stream decodes identically whether the bytes
     // past the end of its data view are zero or poison. the reader prices
     // its windows inside the buffer, so the poison sits in the same
@@ -289,18 +321,23 @@ void run() {
     poisonBuffer.setAll(0, goldenWireBytes);
 
     final cleanReader = ReadStream(
-        Uint8List.sublistView(cleanBuffer, 0, goldenWireBytes.length));
+      Uint8List.sublistView(cleanBuffer, 0, goldenWireBytes.length),
+    );
     final cleanData = GoldenData();
     expect(serializeGoldenWire(cleanReader, cleanData), 'clean decode');
     expect(matchesGolden(cleanData, GoldenData.golden()), 'clean values');
 
     final poisonReader = ReadStream(
-        Uint8List.sublistView(poisonBuffer, 0, goldenWireBytes.length));
+      Uint8List.sublistView(poisonBuffer, 0, goldenWireBytes.length),
+    );
     final poisonData = GoldenData();
     expect(serializeGoldenWire(poisonReader, poisonData), 'poison decode');
     expect(matchesGolden(poisonData, GoldenData.golden()), 'poison values');
-    expectEquals(poisonReader.bitsProcessed, cleanReader.bitsProcessed,
-        'bits processed');
+    expectEquals(
+      poisonReader.bitsProcessed,
+      cleanReader.bitsProcessed,
+      'bits processed',
+    );
   });
 
   test('past-end poison: a truncated stream refuses identically', () {
@@ -315,21 +352,30 @@ void run() {
     cleanBuffer.setAll(0, goldenWireBytes.sublist(0, truncatedBytes));
     poisonBuffer.setAll(0, goldenWireBytes.sublist(0, truncatedBytes));
 
-    final cleanReader =
-        ReadStream(Uint8List.sublistView(cleanBuffer, 0, truncatedBytes));
+    final cleanReader = ReadStream(
+      Uint8List.sublistView(cleanBuffer, 0, truncatedBytes),
+    );
     final cleanData = GoldenData();
-    expect(!serializeGoldenWire(cleanReader, cleanData),
-        'the truncated clean stream must refuse');
+    expect(
+      !serializeGoldenWire(cleanReader, cleanData),
+      'the truncated clean stream must refuse',
+    );
 
-    final poisonReader =
-        ReadStream(Uint8List.sublistView(poisonBuffer, 0, truncatedBytes));
+    final poisonReader = ReadStream(
+      Uint8List.sublistView(poisonBuffer, 0, truncatedBytes),
+    );
     final poisonData = GoldenData();
-    expect(!serializeGoldenWire(poisonReader, poisonData),
-        'the truncated poison stream must refuse');
+    expect(
+      !serializeGoldenWire(poisonReader, poisonData),
+      'the truncated poison stream must refuse',
+    );
 
     // refused at the same point, with identical partial state
-    expectEquals(poisonReader.bitsProcessed, cleanReader.bitsProcessed,
-        'refusal point');
+    expectEquals(
+      poisonReader.bitsProcessed,
+      cleanReader.bitsProcessed,
+      'refusal point',
+    );
     expect(matchesGolden(poisonData, cleanData), 'identical partial state');
   });
 
@@ -342,19 +388,25 @@ void run() {
       if (offset > 0) {
         expect(writer.serializeBits(Ref<int>(0), offset), 'prefix write');
       }
-      expect(serializeGoldenWire(writer, GoldenData.golden()),
-          'offset $offset write');
+      expect(
+        serializeGoldenWire(writer, GoldenData.golden()),
+        'offset $offset write',
+      );
 
       final measure = MeasureStream();
       if (offset > 0) {
         expect(measure.serializeBits(Ref<int>(0), offset), 'prefix measure');
       }
-      expect(serializeGoldenWire(measure, GoldenData.golden()),
-          'offset $offset measure');
+      expect(
+        serializeGoldenWire(measure, GoldenData.golden()),
+        'offset $offset measure',
+      );
 
-      expect(measure.bitsProcessed >= writer.bitsProcessed,
-          'offset $offset: measured ${measure.bitsProcessed} bits, '
-          'wrote ${writer.bitsProcessed}');
+      expect(
+        measure.bitsProcessed >= writer.bitsProcessed,
+        'offset $offset: measured ${measure.bitsProcessed} bits, '
+        'wrote ${writer.bitsProcessed}',
+      );
     }
   });
 
@@ -376,11 +428,15 @@ void run() {
       final matches = ok && matchesGolden(data, golden);
 
       if (bit < goldenBits) {
-        expect(!matches,
-            'consumed bit $bit flipped: still decoded the golden values');
+        expect(
+          !matches,
+          'consumed bit $bit flipped: still decoded the golden values',
+        );
       } else {
-        expect(matches && reader.bitsProcessed == goldenBits,
-            'trailing bit $bit flipped: not accepted identically');
+        expect(
+          matches && reader.bitsProcessed == goldenBits,
+          'trailing bit $bit flipped: not accepted identically',
+        );
       }
     }
   });
@@ -394,8 +450,7 @@ void run() {
     const goldenValue = UInt128(0x0123456789ABCDEF, 0xFEDCBA9876543210);
 
     final writer = WriteStream(Uint8List(16));
-    expect(writer.serializeUint128(Ref<UInt128>(goldenValue)),
-        'uint128 write');
+    expect(writer.serializeUint128(Ref<UInt128>(goldenValue)), 'uint128 write');
     writer.flush();
     expectEquals(writer.bytesProcessed, 16, 'uint128 bytes processed');
     expectBytes(writer.data(), goldenUint128Bytes, 'golden uint128 bytes');
@@ -420,19 +475,25 @@ void run() {
     final buffer = Uint8List(16);
     final writer = WriteStream(buffer);
     expect(
-        writer.serializeInt128(Ref<Int128>(goldenValue), goldenMin, goldenMax),
-        'int128 write');
+      writer.serializeInt128(Ref<Int128>(goldenValue), goldenMin, goldenMax),
+      'int128 write',
+    );
     writer.flush();
     expectEquals(writer.bitsProcessed, 72, 'int128 bits processed');
     // the flush stores whole words, so the bytes past the 9 written are
     // zeros — compare the first 12 bytes of the buffer, as the reference does
-    expectBytes(Uint8List.sublistView(buffer, 0, 12), goldenInt128Bytes,
-        'golden int128 bytes');
+    expectBytes(
+      Uint8List.sublistView(buffer, 0, 12),
+      goldenInt128Bytes,
+      'golden int128 bytes',
+    );
 
     final reader = ReadStream(goldenInt128Bytes);
     final readBack = Ref<Int128>(Int128.zero);
-    expect(reader.serializeInt128(readBack, goldenMin, goldenMax),
-        'int128 read');
+    expect(
+      reader.serializeInt128(readBack, goldenMin, goldenMax),
+      'int128 read',
+    );
     expectEquals(readBack.value, goldenValue, 'int128 round trip');
   });
 
@@ -441,8 +502,14 @@ void run() {
     // wire bytes for the strict two-rounding writer, and pinned decoded BIT
     // PATTERNS — the divergence this detects is a single ulp, and tolerance
     // would hide it.
-    final pinnedBytes =
-        Uint8List.fromList(const [0x10, 0xA7, 0x06, 0x80, 0x82, 0x06]);
+    final pinnedBytes = Uint8List.fromList(const [
+      0x10,
+      0xA7,
+      0x06,
+      0x80,
+      0x82,
+      0x06,
+    ]);
 
     bool serializeVector(BitStream stream, List<Ref<double>> values) {
       for (final value in values) {
@@ -454,7 +521,11 @@ void run() {
     }
 
     final writer = WriteStream(Uint8List(64));
-    final written = [Ref<double>(0.0), Ref<double>(-99.875), Ref<double>(-33.34)];
+    final written = [
+      Ref<double>(0.0),
+      Ref<double>(-99.875),
+      Ref<double>(-33.34),
+    ];
     expect(serializeVector(writer, written), 'vector write');
     writer.flush();
     expectEquals(writer.bytesProcessed, pinnedBytes.length, 'vector size');
@@ -463,12 +534,21 @@ void run() {
     final reader = ReadStream(pinnedBytes);
     final read = [Ref<double>(-1.0), Ref<double>(-1.0), Ref<double>(-1.0)];
     expect(serializeVector(reader, read), 'vector read');
-    expectEquals(float32BitsFromDouble(read[0].value), 0x00000000,
-        'decoded bits a');
-    expectEquals(float32BitsFromDouble(read[1].value), 0xC2C7BD71,
-        'decoded bits b');
-    expectEquals(float32BitsFromDouble(read[2].value), 0xC2055C2A,
-        'decoded bits c');
+    expectEquals(
+      float32BitsFromDouble(read[0].value),
+      0x00000000,
+      'decoded bits a',
+    );
+    expectEquals(
+      float32BitsFromDouble(read[1].value),
+      0xC2C7BD71,
+      'decoded bits b',
+    );
+    expectEquals(
+      float32BitsFromDouble(read[2].value),
+      0xC2055C2A,
+      'decoded bits c',
+    );
   });
 
   test('compressed float conformance: the writer-fusion vector', () {
@@ -477,8 +557,17 @@ void run() {
     // ulp of the scaled product reaches 1 — and 8388608.0 is the row a
     // fused writer moves. 16777215.0 is the normative integer clamp's
     // witness row.
-    final pinnedBytes = Uint8List.fromList(
-        const [0x00, 0x00, 0x80, 0xAC, 0xAA, 0xAA, 0xFF, 0xFF, 0xFF]);
+    final pinnedBytes = Uint8List.fromList(const [
+      0x00,
+      0x00,
+      0x80,
+      0xAC,
+      0xAA,
+      0xAA,
+      0xFF,
+      0xFF,
+      0xFF,
+    ]);
 
     bool serializeVector(BitStream stream, List<Ref<double>> values) {
       for (final value in values) {
@@ -503,11 +592,20 @@ void run() {
     final reader = ReadStream(pinnedBytes);
     final read = [Ref<double>(-1.0), Ref<double>(-1.0), Ref<double>(-1.0)];
     expect(serializeVector(reader, read), 'vector read');
-    expectEquals(float32BitsFromDouble(read[0].value), 0x4B000000,
-        'decoded bits a'); // 8388608.0
-    expectEquals(float32BitsFromDouble(read[1].value), 0x4B2AAAAC,
-        'decoded bits b'); // 11184812.0
-    expectEquals(float32BitsFromDouble(read[2].value), 0x4B7FFFFF,
-        'decoded bits c'); // 16777215.0
+    expectEquals(
+      float32BitsFromDouble(read[0].value),
+      0x4B000000,
+      'decoded bits a',
+    ); // 8388608.0
+    expectEquals(
+      float32BitsFromDouble(read[1].value),
+      0x4B2AAAAC,
+      'decoded bits b',
+    ); // 11184812.0
+    expectEquals(
+      float32BitsFromDouble(read[2].value),
+      0x4B7FFFFF,
+      'decoded bits c',
+    ); // 16777215.0
   });
 }

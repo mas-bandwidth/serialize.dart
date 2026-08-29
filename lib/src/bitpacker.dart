@@ -38,13 +38,13 @@ final class BitWriter {
   /// Creates a bit writer that fills [buffer] with bitpacked data. The buffer
   /// length must be a multiple of 8.
   BitWriter(Uint8List buffer)
-      : _data = buffer,
-        _view = ByteData.sublistView(buffer),
-        _scratch = 0,
-        _scratchBits = 0,
-        _numBits = buffer.length * 8,
-        _bitsWritten = 0,
-        _wordIndex = 0 {
+    : _data = buffer,
+      _view = ByteData.sublistView(buffer),
+      _scratch = 0,
+      _scratchBits = 0,
+      _numBits = buffer.length * 8,
+      _bitsWritten = 0,
+      _wordIndex = 0 {
     assert(buffer.length % 8 == 0);
   }
 
@@ -138,7 +138,8 @@ final class BitWriter {
     final tailBits = _bitsWritten % 64;
     if (tailBits != 0) {
       _scratch =
-          _view.getUint64(_wordIndex * 8, Endian.little) & ((1 << tailBits) - 1);
+          _view.getUint64(_wordIndex * 8, Endian.little) &
+          ((1 << tailBits) - 1);
     } else {
       _scratch = 0;
     }
@@ -214,12 +215,12 @@ final class BitReader {
   /// Creates a bit reader over the bitpacked data in [data]. Any length is
   /// supported, and no slack past the data is required.
   BitReader(Uint8List data)
-      : _data = data,
-        _view = ByteData.sublistView(data),
-        _numBits = data.length * 8,
-        _bitsRead = 0,
-        _tailBase = 0,
-        _tailWord = 0 {
+    : _data = data,
+      _view = ByteData.sublistView(data),
+      _numBits = data.length * 8,
+      _bitsRead = 0,
+      _tailBase = 0,
+      _tailWord = 0 {
     _assembleTail();
   }
 

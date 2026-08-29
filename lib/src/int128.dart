@@ -158,9 +158,8 @@ final class Int128 {
     return Int128(hi >> 63, hi >> (count - 64));
   }
 
-  bool operator <(Int128 other) => hi == other.hi
-      ? unsignedLessThan(lo, other.lo)
-      : hi < other.hi;
+  bool operator <(Int128 other) =>
+      hi == other.hi ? unsignedLessThan(lo, other.lo) : hi < other.hi;
 
   bool operator >(Int128 other) => other < this;
 

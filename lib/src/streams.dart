@@ -161,8 +161,9 @@ void _fixedPointParams128(int integerBits, int fractionBits, int min, int max) {
   // the range in whole units is exact in 64 bits, and shifting it left adds
   // exactly fractionBits to its bit length. Zero for the degenerate range,
   // on every storage width (STANDARD.md, adopted 2026-08-15).
-  _fixedParams128.bits =
-      min == max ? 0 : bitsRequired64(min, max) + fractionBits;
+  _fixedParams128.bits = min == max
+      ? 0
+      : bitsRequired64(min, max) + fractionBits;
 }
 
 // The relative-integer ladder tiers of serialize_int_relative_internal:
@@ -327,7 +328,11 @@ abstract interface class BitStream {
 
   /// Serializes a float quantized to a resolution over [min,max].
   bool serializeCompressedFloat(
-      Ref<double> value, double min, double max, double resolution);
+    Ref<double> value,
+    double min,
+    double max,
+    double resolution,
+  );
 
   /// Serializes data.length raw bytes, aligning first.
   bool serializeBytes(Uint8List data);
@@ -346,11 +351,21 @@ abstract interface class BitStream {
 
   /// Serializes a fixed point value on storage of 8, 16, 32 or 64 bits.
   bool serializeFixed(
-      Ref<int> value, int integerBits, int fractionBits, int min, int max);
+    Ref<int> value,
+    int integerBits,
+    int fractionBits,
+    int min,
+    int max,
+  );
 
   /// Serializes a fixed point value on 128-bit storage.
   bool serializeFixed128(
-      Ref<Int128> value, int integerBits, int fractionBits, int min, int max);
+    Ref<Int128> value,
+    int integerBits,
+    int fractionBits,
+    int min,
+    int max,
+  );
 
   /// The number of align bits required at the current bit index.
   int get alignBits;
@@ -542,7 +557,11 @@ final class WriteStream implements BitStream {
   /// integer clamp, 2026-08-23). Writing a non-finite value is
   /// non-conforming and asserts in debug. Lossy by construction.
   bool serializeCompressedFloat(
-      Ref<double> value, double min, double max, double resolution) {
+    Ref<double> value,
+    double min,
+    double max,
+    double resolution,
+  ) {
     _compressedFloatParams(min, max, resolution);
     final params = _floatParams;
     // the float parameter type of the reference: the value rounds to float32
@@ -563,8 +582,9 @@ final class WriteStream implements BitStream {
     // STANDARD.md pins this to float32 with TWO roundings: the product
     // rounds BEFORE 0.5 is added. Both fround calls are load bearing —
     // fused or widened arithmetic changes the wire.
-    final scaled =
-        fround(normalized * fround(params.maxIntegerValue.toDouble()));
+    final scaled = fround(
+      normalized * fround(params.maxIntegerValue.toDouble()),
+    );
     var integerValue = fround(scaled + 0.5).floor();
     // STANDARD.md: the integer clamp is normative (2026-08-23, schema#109).
     // Once maxIntegerValue >= 2^23 the float32 ulp at the top of the range
@@ -664,7 +684,12 @@ final class WriteStream implements BitStream {
   /// degenerate range costs zero bits. For 128-bit storage see
   /// [serializeFixed128].
   bool serializeFixed(
-      Ref<int> value, int integerBits, int fractionBits, int min, int max) {
+    Ref<int> value,
+    int integerBits,
+    int fractionBits,
+    int min,
+    int max,
+  ) {
     _fixedPointParams(integerBits, fractionBits, min, max);
     final params = _fixedParams;
     if (min == max) {
@@ -693,7 +718,12 @@ final class WriteStream implements BitStream {
   /// from least significant upward, exactly as serialize_bits splits wide
   /// values.
   bool serializeFixed128(
-      Ref<Int128> value, int integerBits, int fractionBits, int min, int max) {
+    Ref<Int128> value,
+    int integerBits,
+    int fractionBits,
+    int min,
+    int max,
+  ) {
     _fixedPointParams128(integerBits, fractionBits, min, max);
     final params = _fixedParams128;
     if (min == max) {
@@ -957,7 +987,11 @@ final class ReadStream implements BitStream {
   /// float32 — the product rounds BEFORE min is added, which the conformance
   /// vectors pin bit-exactly. An integer above the step count is refused.
   bool serializeCompressedFloat(
-      Ref<double> value, double min, double max, double resolution) {
+    Ref<double> value,
+    double min,
+    double max,
+    double resolution,
+  ) {
     _compressedFloatParams(min, max, resolution);
     final params = _floatParams;
     if (_reader.wouldReadPastEnd(params.bits)) {
@@ -967,8 +1001,10 @@ final class ReadStream implements BitStream {
     if (integerValue > params.maxIntegerValue) {
       return false;
     }
-    final normalized = fround(fround(integerValue.toDouble()) /
-        fround(params.maxIntegerValue.toDouble()));
+    final normalized = fround(
+      fround(integerValue.toDouble()) /
+          fround(params.maxIntegerValue.toDouble()),
+    );
     // the product must round to float32 BEFORE min is added: a fused decode
     // is one ulp off whenever min is non-zero
     final scaled = fround(normalized * params.delta);
@@ -1119,7 +1155,12 @@ final class ReadStream implements BitStream {
   /// Reads a fixed point value on storage of 8, 16, 32 or 64 bits. The
   /// decoded offset is checked against the raw range — reject, never clamp.
   bool serializeFixed(
-      Ref<int> value, int integerBits, int fractionBits, int min, int max) {
+    Ref<int> value,
+    int integerBits,
+    int fractionBits,
+    int min,
+    int max,
+  ) {
     _fixedPointParams(integerBits, fractionBits, min, max);
     final params = _fixedParams;
     if (min == max) {
@@ -1153,19 +1194,28 @@ final class ReadStream implements BitStream {
     }
     // reconstruct in the unsigned domain, then convert: wraps two's
     // complement for signed storage
-    value.value =
-        _storageValue(params.rawMin + offset, params.width, params.signed);
+    value.value = _storageValue(
+      params.rawMin + offset,
+      params.width,
+      params.signed,
+    );
     return true;
   }
 
-  static int _storageValue(int raw, int width, bool signed) =>
-      width == 64 ? raw : (signed ? raw.toSigned(width) : raw.toUnsigned(width));
+  static int _storageValue(int raw, int width, bool signed) => width == 64
+      ? raw
+      : (signed ? raw.toSigned(width) : raw.toUnsigned(width));
 
   /// Reads a fixed point value on 128-bit storage: 32-bit groups least
   /// significant first, offset checked against the raw range in the unsigned
   /// 128-bit domain.
   bool serializeFixed128(
-      Ref<Int128> value, int integerBits, int fractionBits, int min, int max) {
+    Ref<Int128> value,
+    int integerBits,
+    int fractionBits,
+    int min,
+    int max,
+  ) {
     _fixedPointParams128(integerBits, fractionBits, min, max);
     final params = _fixedParams128;
     if (min == max) {
@@ -1298,7 +1348,11 @@ final class MeasureStream implements BitStream {
 
   /// Measures a compressed float: exactly the declaration's bit count.
   bool serializeCompressedFloat(
-      Ref<double> value, double min, double max, double resolution) {
+    Ref<double> value,
+    double min,
+    double max,
+    double resolution,
+  ) {
     _compressedFloatParams(min, max, resolution);
     _bitsWritten += _floatParams.bits;
     return true;
@@ -1356,8 +1410,10 @@ final class MeasureStream implements BitStream {
     for (var tier = 0; tier < _relativeTierMin.length; tier++) {
       _bitsWritten += 1;
       if (difference <= _relativeTierMax[tier]) {
-        _bitsWritten +=
-            bitsRequired(_relativeTierMin[tier], _relativeTierMax[tier]);
+        _bitsWritten += bitsRequired(
+          _relativeTierMin[tier],
+          _relativeTierMax[tier],
+        );
         return true;
       }
     }
@@ -1367,28 +1423,44 @@ final class MeasureStream implements BitStream {
 
   /// Measures a fixed point value on storage of 8, 16, 32 or 64 bits.
   bool serializeFixed(
-      Ref<int> value, int integerBits, int fractionBits, int min, int max) {
+    Ref<int> value,
+    int integerBits,
+    int fractionBits,
+    int min,
+    int max,
+  ) {
     _fixedPointParams(integerBits, fractionBits, min, max);
     if (min == max) {
       assert(value.value == _fixedParams.rawMin);
       return true;
     }
-    assert(!unsignedGreaterThan(
-        value.value - _fixedParams.rawMin, _fixedParams.rawRange));
+    assert(
+      !unsignedGreaterThan(
+        value.value - _fixedParams.rawMin,
+        _fixedParams.rawRange,
+      ),
+    );
     _bitsWritten += _fixedParams.bits;
     return true;
   }
 
   /// Measures a fixed point value on 128-bit storage.
   bool serializeFixed128(
-      Ref<Int128> value, int integerBits, int fractionBits, int min, int max) {
+    Ref<Int128> value,
+    int integerBits,
+    int fractionBits,
+    int min,
+    int max,
+  ) {
     _fixedPointParams128(integerBits, fractionBits, min, max);
     if (min == max) {
       assert(value.value.toUnsigned() == _fixedParams128.rawMin);
       return true;
     }
-    assert(!(value.value.toUnsigned() - _fixedParams128.rawMin >
-        _fixedParams128.rawRange));
+    assert(
+      !(value.value.toUnsigned() - _fixedParams128.rawMin >
+          _fixedParams128.rawRange),
+    );
     _bitsWritten += _fixedParams128.bits;
     return true;
   }

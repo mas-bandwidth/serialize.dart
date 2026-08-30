@@ -238,10 +238,7 @@ _GatedBitpacker gateBitpacker() {
   if (first64 != pinBitpackerFirst64) {
     gateFail('bitpacker', 'first 64 bytes', pinBitpackerFirst64, first64);
   }
-  final last8 = toHexBytes(
-    Uint8List.sublistView(buffer, bytesPerPass - 8),
-    8,
-  );
+  final last8 = toHexBytes(Uint8List.sublistView(buffer, bytesPerPass - 8), 8);
   if (last8 != pinBitpackerLast8) {
     gateFail('bitpacker', 'last 8 bytes', pinBitpackerLast8, last8);
   }
@@ -624,7 +621,12 @@ _GatedShape<P> gateShape<P>(
   }
 
   if (bytesPerPacket != pin.bytesPerPacket) {
-    gateFail(row, 'bytes per packet', '${pin.bytesPerPacket}', '$bytesPerPacket');
+    gateFail(
+      row,
+      'bytes per packet',
+      '${pin.bytesPerPacket}',
+      '$bytesPerPacket',
+    );
   }
   final hex0 = toHexBytes(variants[0], bytesPerPacket);
   if (hex0 != pin.variant0) {
@@ -926,7 +928,9 @@ void main(List<String> arguments) {
   if (csv) {
     final buffer = StringBuffer('row,op,units,value\n');
     for (final r in results) {
-      buffer.write('${r.row},${r.op},${r.units},${r.value.toStringAsFixed(4)}\n');
+      buffer.write(
+        '${r.row},${r.op},${r.units},${r.value.toStringAsFixed(4)}\n',
+      );
     }
     stdout.write(buffer.toString());
   }

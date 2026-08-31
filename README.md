@@ -105,47 +105,7 @@ modes: writer contracts live in asserts, so the two runs cover both the
 checked and release shapes of the library (see
 [USAGE.md](USAGE.md#writes-trust-reads-validate)).
 
-## Benchmark
-
-```
-dist/dart-sdk-3.13.2/bin/dart run bench/bench.dart                          # JIT
-dist/dart-sdk-3.13.2/bin/dart compile exe bench/bench.dart -o bench.exe     # AOT
-./bench.exe
-```
-
-[bench/bench.dart](bench/bench.dart) is an operation-for-operation
-mirror of the family benchmark (serialize.c's `bench.c`, itself a mirror
-of the C++ `bench.cpp`): the raw bitpacker, the representative stream
-packet through write, read and measure, and three packet shapes, at the
-same iteration counts with the same LCG-driven inputs and
-best-of-five-trials discipline. Every row is golden gated before any row
-is timed — the exact buffers the loops write are verified byte for byte
-against pins produced by the C reference's own bench data paths, and a
-bench that fails its goldens reports nothing. `--csv` emits the numbers
-as `row,op,units,value`; `BENCH_BITPACKER_PASSES` and
-`BENCH_STREAM_PACKETS` scale the loops for linearity checks.
-
-Both runtime modes matter: JIT (`dart run`) is the iteration number, AOT
-(`dart compile exe`) is the number that ships — Flutter release builds
-are AOT. Asserts are off in both unless `--enable-asserts` is passed, so
-a plain run measures the release shape.
-
-Current AOT numbers at the family scale (4096 bitpacker passes, 1,000,000
-packets per stream row), measured on a MacBook Air (Apple Silicon) —
-only numbers from a quiet machine are meaningful, and only as ratios
-between family legs measured back to back on the same machine:
-
-```
-bitpacker write:     745.3 MB/s
-bitpacker read:     1001.7 MB/s
-stream write:        742.4 MB/s  (15.9 M packets/s)
-stream read:         512.9 MB/s  (11.0 M packets/s)
-stream measure:                  37.4 M packets/s
-
-int packet   (runtime):       write:   21.6 M packets/s   read:   15.9 M packets/s
-bits packet  (runtime):       write:   32.8 M packets/s   read:   21.4 M packets/s
-mixed packet (runtime):       write:   20.8 M packets/s   read:   13.4 M packets/s
-```
+Benchmarking for the serialize family lives in [mas-bandwidth/schema](https://github.com/mas-bandwidth/schema)'s data-driven bench, which measures the generated codecs across every language on one corpus.
 
 ## License
 

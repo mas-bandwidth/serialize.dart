@@ -10,6 +10,12 @@
 
 import 'bits.dart';
 
+// 16 hex digits of a 64-bit pattern held in a signed int (toRadixString on
+// a masked negative keeps the sign — it renders a value, not the pattern).
+String _hex16(int value) =>
+    (value >>> 32).toRadixString(16).padLeft(8, '0') +
+    (value & 0xffffffff).toRadixString(16).padLeft(8, '0');
+
 /// Unsigned 128-bit value as (hi, lo) 64-bit halves, each held
 /// bit-transparently in a signed Dart int.
 final class UInt128 {
@@ -101,9 +107,7 @@ final class UInt128 {
   int get hashCode => Object.hash(hi, lo);
 
   @override
-  String toString() =>
-      '0x${(hi & allOnes64).toRadixString(16).padLeft(16, '0')}'
-      '${(lo & allOnes64).toRadixString(16).padLeft(16, '0')}';
+  String toString() => '0x${_hex16(hi)}${_hex16(lo)}';
 }
 
 /// Signed 128-bit value as (hi, lo) 64-bit halves, two's complement.
@@ -175,9 +179,7 @@ final class Int128 {
   int get hashCode => Object.hash(hi, lo);
 
   @override
-  String toString() =>
-      '0x${(hi & allOnes64).toRadixString(16).padLeft(16, '0')}'
-      '${(lo & allOnes64).toRadixString(16).padLeft(16, '0')}';
+  String toString() => '0x${_hex16(hi)}${_hex16(lo)}';
 }
 
 /// The number of bits required to serialize a 128-bit integer in [min,max].

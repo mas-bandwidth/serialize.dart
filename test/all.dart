@@ -7,6 +7,7 @@ import 'bitpacker_test.dart' as bitpacker;
 import 'bits_required_test.dart' as bits_required;
 import 'golden_wire_test.dart' as golden_wire;
 import 'harness.dart';
+import 'int128_test.dart' as int128;
 import 'measure_test.dart' as measure;
 import 'serialize_bits_test.dart' as serialize_bits;
 import 'serialize_bytes_string_test.dart' as serialize_bytes_string;
@@ -26,5 +27,6 @@ void main() {
   serialize_fixed.run();
   measure.run();
   golden_wire.run();
+  int128.run();
   exit(summarize() > 0 ? 1 : 0);
 }

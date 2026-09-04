@@ -18,6 +18,31 @@ is vendored verbatim from
 with the shared conformance corpus in [conformance/](conformance); CI fails
 if either drifts from upstream.
 
+## Getting it
+
+serialize.dart ships as source today. The implementation is ready and the
+package is not yet published: `pubspec.yaml` names it `serialize` at 1.1.0,
+and nothing under that name exists on pub.dev. Publishing it there is a
+separate round.
+
+Depend on it from git, which gives you the same `package:serialize/` imports a
+published package would:
+
+```yaml
+dependencies:
+  serialize:
+    git:
+      url: https://github.com/mas-bandwidth/serialize.dart.git
+      ref: v1.1.0
+```
+
+```dart
+import 'package:serialize/serialize.dart';
+```
+
+Pure Dart, zero dependencies, SDK 3.9 or newer. Pin a release tag as above
+rather than tracking `main`; v1.1.0 is current.
+
 ## The surface
 
 The complete family operation set, on three streams sharing one

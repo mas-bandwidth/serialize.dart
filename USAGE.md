@@ -9,6 +9,9 @@ this document teaches the Dart surface that speaks it.
 import 'package:serialize/serialize.dart';
 ```
 
+The library is not on pub.dev yet — depend on it from git and that import
+resolves unchanged. See [README.md](README.md#getting-it).
+
 ## One serialize function, three streams
 
 The family's defining pattern: write, read and measure share a single

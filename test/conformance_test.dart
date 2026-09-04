@@ -462,14 +462,36 @@ _Step? _stepFromWords(String text) {
       return _Step(_Kind.align);
     case 'float' when words.length == 1:
       return _Step(_Kind.float32);
+    case 'double' when words.length == 1:
+      return _Step(_Kind.float64);
+    case 'uint128' when words.length == 1:
+      return _Step(_Kind.uint128);
+    case 'int_relative' when words.length == 2 && number(1) != null:
+      return _Step(_Kind.intRelative)..previous = _int64(number(1)!);
+    case 'compressed_float' when words.length == 4:
+      final fmin = double.tryParse(words[1]);
+      final fmax = double.tryParse(words[2]);
+      final fres = double.tryParse(words[3]);
+      if (fmin == null || fmax == null || fres == null) {
+        return null;
+      }
+      return _Step(_Kind.compressedFloat)
+        ..fmin = fmin
+        ..fmax = fmax
+        ..fres = fres;
     case 'bytes' when words.length == 2 && number(1) != null:
       return _Step(_Kind.bytes)..width = _int64(number(1)!);
     case 'string' when words.length == 2 && number(1) != null:
       return _Step(_Kind.string)..width = _int64(number(1)!);
     case 'wstring' when words.length == 2 && number(1) != null:
       return _Step(_Kind.wstring)..width = _int64(number(1)!);
-    case 'int' when words.length == 3 && number(1) != null && number(2) != null:
-      return _Step(_Kind.ranged32)
+    case 'int' || 'int64' || 'int128'
+        when words.length == 3 && number(1) != null && number(2) != null:
+      return _Step(switch (words[0]) {
+          'int' => _Kind.ranged32,
+          'int64' => _Kind.ranged64,
+          _ => _Kind.ranged128,
+        })
         ..min = number(1)!
         ..max = number(2)!;
     case 'fixed' when words.length == 5:

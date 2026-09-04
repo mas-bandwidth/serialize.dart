@@ -256,3 +256,11 @@ void run() {
     });
   }
 }
+
+/// Runs this suite on its own — `dart run test/conformance_test.dart` — so the
+/// interop job can hold this reader and the pinned C++ reader to the same
+/// corpus in one place. test/all.dart calls [run] directly.
+void main() {
+  run();
+  exit(summarize() > 0 ? 1 : 0);
+}

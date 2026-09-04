@@ -2,6 +2,6 @@ name: serialize
 description: >-
   Bitpacked binary serialization for native Dart: the serialize wire format,
   byte-identical to the C, C++, C#, Go, Rust and JavaScript implementations.
-version: 1.1.0
+version: 1.1.1
 environment:
   sdk: ^3.9.0

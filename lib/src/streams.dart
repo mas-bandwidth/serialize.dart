@@ -276,6 +276,14 @@ bool _isValidUtf16(String value) {
 // The unified surface
 // ---------------------------------------------------------------------------
 
+/// An object that serializes itself through a stream: the operand of
+/// [BitStream.serializeObject], and the shape a message type takes when one
+/// function writes, reads and measures it.
+abstract interface class Serializable {
+  /// Serializes this object through [stream], returning false to refuse.
+  bool serialize(BitStream stream);
+}
+
 /// The unified serialize surface implemented by [WriteStream], [ReadStream]
 /// and [MeasureStream] — the C# port's IBitStream — so a single serialize
 /// function per message type writes, reads and measures it.
@@ -345,6 +353,11 @@ abstract interface class BitStream {
   /// Serializes an alignment to the next byte boundary.
   bool serializeAlign();
 
+  /// Serializes a nested object inline. It contributes no bytes of its own:
+  /// whatever the object serializes appears at exactly this position, with
+  /// no framing, length prefix or alignment around it.
+  bool serializeObject(Serializable object);
+
   /// Serializes [current] relative to [previous], current > previous.
   bool serializeIntRelative(int previous, Ref<int> current);
 
@@ -401,18 +414,23 @@ final class WriteStream implements BitStream {
   /// False.
   bool get isReading => false;
 
-  /// Writes the low [bits] bits of the held value, bits in [1,32].
+  /// Writes the low [bits] bits of the held value, bits in [1,32]. The value
+  /// must fit in that many bits: a wider one is caller error, asserted here
+  /// on the caller's own value, before the bit writer masks it.
   bool serializeBits(Ref<int> value, int bits) {
     assert(bits >= 1 && bits <= 32);
+    assert(valueFitsInBits(value.value, bits));
     _writer.writeBits(value.value, bits);
     return true;
   }
 
   /// Writes the low [bits] bits of the held value, bits in [1,64]: a single
   /// group for 32 bits or fewer, otherwise the low 32-bit group first, then
-  /// the remaining bits - 32 high bits (STANDARD.md's splitting rule).
+  /// the remaining bits - 32 high bits (STANDARD.md's splitting rule). The
+  /// value must fit in [bits] bits at every width, not only at 32 or fewer.
   bool serializeBits64(Ref<int> value, int bits) {
     assert(bits >= 1 && bits <= 64);
+    assert(valueFitsInBits(value.value, bits));
     if (bits <= 32) {
       _writer.writeBits(value.value, bits);
     } else {
@@ -648,6 +666,9 @@ final class WriteStream implements BitStream {
     _writer.writeAlign();
     return true;
   }
+
+  /// Writes a nested object inline, adding no bytes of its own.
+  bool serializeObject(Serializable object) => object.serialize(this);
 
   /// Writes [current] relative to [previous], where current > previous: the
   /// ladder of one-bit flags (STANDARD.md, "int_relative"). Both values lie
@@ -1146,6 +1167,20 @@ final class ReadStream implements BitStream {
     return true;
   }
 
+  /// Reads a nested object inline, consuming no bits of its own. The failure
+  /// state is consulted first, so a nested object refuses on a stream that
+  /// has already failed, and a refusal inside the object propagates out of
+  /// the composition rather than being swallowed by it.
+  bool serializeObject(Serializable object) {
+    if (failed) {
+      return false;
+    }
+    if (!object.serialize(this)) {
+      return _refuse();
+    }
+    return true;
+  }
+
   /// Reads a relative integer: the ladder of one-bit flags. Every tier's
   /// reconstruction is checked (STANDARD.md, "int_relative"): the value is
   /// rebuilt in a width that cannot wrap, then compared against the domain —
@@ -1331,9 +1366,11 @@ final class MeasureStream implements BitStream {
   /// False.
   bool get isReading => false;
 
-  /// Measures [bits] bits, bits in [1,32].
+  /// Measures [bits] bits, bits in [1,32]. The value must fit in that many
+  /// bits, the same caller contract a write is under.
   bool serializeBits(Ref<int> value, int bits) {
     assert(bits >= 1 && bits <= 32);
+    assert(valueFitsInBits(value.value, bits));
     _bitsWritten += bits;
     return true;
   }
@@ -1341,6 +1378,7 @@ final class MeasureStream implements BitStream {
   /// Measures [bits] bits, bits in [1,64].
   bool serializeBits64(Ref<int> value, int bits) {
     assert(bits >= 1 && bits <= 64);
+    assert(valueFitsInBits(value.value, bits));
     _bitsWritten += bits;
     return true;
   }
@@ -1458,6 +1496,9 @@ final class MeasureStream implements BitStream {
     _bitsWritten += alignBits;
     return true;
   }
+
+  /// Measures a nested object inline, adding no bits of its own.
+  bool serializeObject(Serializable object) => object.serialize(this);
 
   /// Measures a relative integer: the exact ladder cost for this value.
   bool serializeIntRelative(int previous, Ref<int> current) {

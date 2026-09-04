@@ -16,6 +16,7 @@ import 'serialize_fixed_test.dart' as serialize_fixed;
 import 'serialize_float_test.dart' as serialize_float;
 import 'serialize_int_relative_test.dart' as serialize_int_relative;
 import 'serialize_int_test.dart' as serialize_int;
+import 'serialize_object_test.dart' as serialize_object;
 import 'terminality_test.dart' as terminality;
 
 void main() {
@@ -27,6 +28,7 @@ void main() {
   serialize_float.run();
   serialize_bytes_string.run();
   serialize_fixed.run();
+  serialize_object.run();
   measure.run();
   golden_wire.run();
   int128.run();

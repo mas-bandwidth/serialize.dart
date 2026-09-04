@@ -51,3 +51,18 @@ int bitsRequired64(int min, int max) {
   final diff = max - min;
   return diff < 0 ? 64 : diff.bitLength;
 }
+
+/// Does [value] fit in a raw bit field of [bits] bits, for bits in [1,64]?
+///
+/// The write side range check for the `bits` operation, run on the caller's
+/// value before the bit writer masks it to the field width: a check placed
+/// after that masking is handed a value the masking already made legal, so a
+/// 40-bit value written in 8 bits arrives as its low 8 bits, in range by
+/// construction, and the check that exists to diagnose it cannot see it. The
+/// bound holds at every width in [1,64] and not only at 32 or fewer
+/// (STANDARD.md, "bits").
+///
+/// The value is read as unsigned, so a negative input is a very large one and
+/// does not fit: a raw bit field is unsigned, and a signed value belongs in
+/// serializeInt over a range that includes it.
+bool valueFitsInBits(int value, int bits) => bits >= 64 || value >>> bits == 0;

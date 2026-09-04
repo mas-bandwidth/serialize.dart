@@ -255,6 +255,38 @@ Finite values outside `[min, max]` clamp on write; writing a non-finite
 value is a contract violation (asserted in debug, clamped in release);
 reads refuse integers smuggled above the quantization ceiling.
 
+## Nested objects
+
+`serializeObject(object)` runs a nested `Serializable`'s own serialize
+function inline. It is composition, not an encoding: it contributes no
+bytes of its own, and inserts no framing, length prefix or alignment
+around what the nested object writes.
+
+```dart
+class Header implements Serializable {
+  final sequence = Ref<int>(0);
+  final reliable = Ref<bool>(false);
+
+  @override
+  bool serialize(BitStream stream) =>
+      stream.serializeBits(sequence, 16) && stream.serializeBool(reliable);
+}
+
+class Packet {
+  final header = Header();
+  final payload = Ref<int>(0);
+}
+
+bool serializePacket(BitStream stream, Packet packet) =>
+    stream.serializeObject(packet.header) &&
+    stream.serializeBits(packet.payload, 8);
+```
+
+Those 25 bits are exactly the bits the same three operations write
+unnested. A refusal inside a nested object propagates out of it, and on a
+read stream the failure state is consulted before the object is entered,
+so a nested object on an already failed stream refuses without running.
+
 ## Raw bytes
 
 `serializeBytes(data)` aligns to the byte boundary (the alignment is part

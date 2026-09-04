@@ -257,7 +257,7 @@ reads refuse integers smuggled above the quantization ceiling.
 
 ## Nested objects
 
-`serializeObject(object)` runs a nested [Serializable]'s own serialize
+`serializeObject(object)` runs a nested `Serializable`'s own serialize
 function inline. It is composition, not an encoding: it contributes no
 bytes of its own, and inserts no framing, length prefix or alignment
 around what the nested object writes.

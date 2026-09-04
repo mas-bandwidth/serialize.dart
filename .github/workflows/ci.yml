@@ -16,3 +16,54 @@ jobs:
       - run: dart format --output=none --set-exit-if-changed .
       - run: dart run test/all.dart
       - run: dart --enable-asserts run test/all.dart
+
+  spec-sync:
+    name: STANDARD.md and conformance/ match upstream
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # STANDARD.md and conformance/ here are VERBATIM VENDORED COPIES of the
+      # wire-format specification and the shared conformance corpus that live
+      # in mas-bandwidth/serialize. This job fails if they have diverged.
+      #
+      # Why vendor rather than link: an implementer wants the normative text
+      # and the vectors beside the implementation, at the revision they are
+      # reading. Why check: a duplicated normative document is the same
+      # failure as a duplicated constant, except it drifts silently and the
+      # ports are what break.
+      #
+      # If this fails, upstream changed. Read the diff, port whatever it
+      # implies, then copy the new files across in the same commit.
+      - name: Compare against mas-bandwidth/serialize
+        # the listing below goes through the GitHub API, which is sharply
+        # rate limited without a token
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "upstream: mas-bandwidth/serialize@$(git ls-remote https://github.com/mas-bandwidth/serialize.git refs/heads/main | cut -f1)"
+          curl -fsSL -o /tmp/upstream-STANDARD.md \
+            https://raw.githubusercontent.com/mas-bandwidth/serialize/main/STANDARD.md
+          if ! diff -u /tmp/upstream-STANDARD.md STANDARD.md; then
+            echo "::error::STANDARD.md has diverged from mas-bandwidth/serialize"
+            exit 1
+          fi
+          echo "STANDARD.md matches upstream"
+
+          # enumerate upstream rather than iterating the vendored files, so a
+          # vector file added upstream is a divergence here too
+          mkdir -p /tmp/upstream-conformance
+          curl -fsSL -H 'Accept: application/vnd.github+json' \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            https://api.github.com/repos/mas-bandwidth/serialize/contents/conformance?ref=main \
+            | jq -r '.[] | select(.type == "file") | .name' > /tmp/upstream-names
+          test -s /tmp/upstream-names
+          while read -r name; do
+            curl -fsSL -o "/tmp/upstream-conformance/$name" \
+              "https://raw.githubusercontent.com/mas-bandwidth/serialize/main/conformance/$name"
+          done < /tmp/upstream-names
+          if ! diff -ru /tmp/upstream-conformance conformance; then
+            echo "::error::conformance/ has diverged from mas-bandwidth/serialize"
+            exit 1
+          fi
+          echo "conformance/ matches upstream"

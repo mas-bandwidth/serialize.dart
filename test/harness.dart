@@ -34,6 +34,28 @@ void expect(bool condition, String message) {
   }
 }
 
+/// True when this run has assertions on — `dart --enable-asserts`, the
+/// checked build the standard's check model speaks of. CI runs the suite both
+/// ways, so a test of a checked-build contract asks this first.
+bool get assertsEnabled {
+  var enabled = false;
+  assert(enabled = true);
+  return enabled;
+}
+
+/// Fails unless [body] throws. For checked-build contract violations: guard
+/// the call with [assertsEnabled], because a release build performs no
+/// write-side validation and nothing throws.
+void expectThrows(void Function() body, String message) {
+  try {
+    body();
+  } catch (_) {
+    return;
+  }
+  _failed++;
+  print('FAIL $_current: $message: nothing was thrown');
+}
+
 /// Fails unless [actual] equals [expected].
 void expectEquals(Object? actual, Object? expected, String message) {
   if (actual != expected) {

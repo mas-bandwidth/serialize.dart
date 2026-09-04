@@ -19,6 +19,12 @@ bool unsignedLessThan(int a, int b) => (a ^ signBit64) < (b ^ signBit64);
 /// Unsigned 64-bit greater-than.
 bool unsignedGreaterThan(int a, int b) => (a ^ signBit64) > (b ^ signBit64);
 
+/// The top of the `int_relative` domain: 2^31 - 1. Both `previous` and
+/// `current` lie in 0 to this value inclusive, which is a property of the
+/// operation rather than of the caller's storage type (STANDARD.md,
+/// "int_relative").
+const int intRelativeMax = 0x7FFFFFFF;
+
 /// The mask of the low [bits] bits, for bits in [0,64].
 int mask64(int bits) => bits >= 64 ? allOnes64 : (1 << bits) - 1;
 

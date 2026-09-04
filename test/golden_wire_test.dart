@@ -342,9 +342,8 @@ void run() {
 
   test('past-end poison: a truncated stream refuses identically', () {
     // refusal path: truncate the stream one byte short so the decode must
-    // fail. the refusal must be identical — same refusal point, same
-    // partial state — whether the bytes at and past the truncated end are
-    // zero or poison.
+    // fail. the refusal must be identical — same partial state — whether the
+    // bytes at and past the truncated end are zero or poison.
     final truncatedBytes = goldenWireBytes.length - 1;
 
     final cleanBuffer = Uint8List(256);
@@ -370,12 +369,10 @@ void run() {
       'the truncated poison stream must refuse',
     );
 
-    // refused at the same point, with identical partial state
-    expectEquals(
-      poisonReader.bitsProcessed,
-      cleanReader.bitsProcessed,
-      'refusal point',
-    );
+    // both streams are latched, and their partial state must be identical:
+    // that state is what a reader interpreting a past-end byte would change.
+    // The bit index is not the refusal point after a failure — the latch
+    // poisons it — so it carries no evidence of its own here.
     expect(matchesGolden(poisonData, cleanData), 'identical partial state');
   });
 

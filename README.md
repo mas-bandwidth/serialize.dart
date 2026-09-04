@@ -12,8 +12,11 @@ family, wire compatible with the
 [Elixir](https://github.com/mas-bandwidth/serialize.elixir) libraries —
 the same values produce the same bytes in every implementation, so a
 stream written by one reads in any other.
-[STANDARD.md](https://github.com/mas-bandwidth/serialize/blob/main/STANDARD.md)
-in the C++ reference is the authority on every byte.
+[STANDARD.md](STANDARD.md) is the authority on every byte. The copy here
+is vendored verbatim from
+[mas-bandwidth/serialize](https://github.com/mas-bandwidth/serialize), along
+with the shared conformance corpus in [conformance/](conformance); CI fails
+if either drifts from upstream.
 
 ## The surface
 
@@ -28,7 +31,7 @@ parameters). [USAGE.md](USAGE.md) teaches every operation by example.
 - **Ranged integers**: `serializeInt`, `serializeInt64`,
   `serializeInt128` — offset from min in exactly the bit length of the
   range, unsigned-domain arithmetic so ranges wider than 2^63/2^127 are
-  exact, zero bits for a degenerate range.
+  exact, zero bits for a degenerate `min == max` range on every width.
 - **Unsigned helpers and bool**: `serializeUint8` / `16` / `32` / `64`,
   `serializeUint128` (the `UInt128` pair type), `serializeBool`.
 - **Floats**: `serializeFloat` and `serializeDouble`, bit transparent both
@@ -41,7 +44,8 @@ parameters). [USAGE.md](USAGE.md) teaches every operation by example.
   validated on read in every mode); `serializeWideString` (one 32-bit
   group per UTF-16 code unit, no alignment anywhere).
 - **The relative integer**: `serializeIntRelative` — the flag ladder for
-  strictly increasing uint32 sequences, one bit for a difference of 1.
+  strictly increasing sequences, one bit for a difference of 1. The domain
+  is 0 to 2^31 - 1 inclusive, checked on read in every tier.
 - **Fixed point**: `serializeFixed` at 8/16/32/64-bit storage and
   `serializeFixed128` at 128-bit storage — Q formats, the raw scaled
   integer as an exact ranged offset, byte identical to `serializeInt64`
@@ -95,14 +99,20 @@ dist/dart-sdk-3.13.2/bin/dart run test/all.dart                    # release sha
 dist/dart-sdk-3.13.2/bin/dart --enable-asserts run test/all.dart   # checked shape
 ```
 
-The suite pins the family's golden vectors byte for byte — the golden
-wire message covering every operation class, the discriminating
+The suite runs every vector in [conformance/](conformance) — the shared
+corpus vendored from the C++ reference — through this reader: accepted
+vectors must yield the stated value and consume the stated bits, refused
+vectors must refuse. Nothing in it is regenerated here, so it can convict
+this port rather than agree with it.
+
+Beside it the suite pins the family's golden vectors byte for byte — the
+golden wire message covering every operation class, the discriminating
 compressed-float vectors (bit patterns, not tolerances), the string and
 wide-string pins, every relative-integer tier, and the fixed point
 shapes at every group count — plus per-primitive unit suites, refusal
-proofs for hostile input, and the measure bound. Run it in both assert
-modes: writer contracts live in asserts, so the two runs cover both the
-checked and release shapes of the library (see
+proofs for hostile input, terminal-failure proofs, and the measure bound.
+Run it in both assert modes: writer contracts live in asserts, so the two
+runs cover both the checked and release shapes of the library (see
 [USAGE.md](USAGE.md#writes-trust-reads-validate)).
 
 Benchmarking for the serialize family lives in [mas-bandwidth/schema](https://github.com/mas-bandwidth/schema)'s data-driven bench, which measures the generated codecs across every language on one corpus.

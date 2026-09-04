@@ -70,13 +70,29 @@ everything, because the wire is a trust boundary.
 
 On the read side, every failure — a truncated read, a value outside its
 range, nonzero alignment padding, a malformed string — returns `false`,
-and hostile bytes never throw. A failed read is terminal for the stream:
-nothing after the failing operation has a defined position. `reset(...)`
-points the stream at data again and clears all state.
+and hostile bytes never throw.
+
+**A refused read leaves its destination unwritten.** The `Ref` holder you
+passed still holds exactly what it held before the call, so a caller that
+trusts the holder over the return code is never handed a value the stream
+did not carry. Two things the rule does not reach: `serializeBytes`,
+`serializeString` and `serializeWideString` read into a buffer you own, and
+its contents after a refusal are unspecified; and a sequence of reads over
+an object or an array may leave earlier members written, because the rule
+is per primitive read.
+
+**A failure is terminal.** Nothing after the failing operation has a
+defined position, so the stream latches: `failed` becomes true, and every
+later read fails, consuming no bits and writing no destination — including
+a zero-bit read of a degenerate range. Only `reset(...)`, which points the
+stream at data again, clears it. The bit index is not the refusal point
+afterwards; after a refusal the position is not part of the contract.
 
 ```dart
 final r = ReadStream(Uint8List.fromList([0x00])); // 8 bits of data
 r.serializeBits(v, 32); // -> false: past the end
+r.serializeBits(v, 8); // -> false too: the stream is latched
+r.failed; // -> true
 
 r.reset(Uint8List.fromList([0x00])); // point at fresh data, state cleared
 r.serializeBits(v, 8); // -> true
@@ -149,6 +165,14 @@ with offsets computed in unsigned arithmetic so ranges wider than 2^63
 are exact. `serializeInt128` extends it to 128 bits on the `Int128` pair
 type, written in 32-bit groups least significant first; where the range
 fits 64 bits the bytes are identical to `serializeInt64`.
+
+`min <= max` is the legal relation on every ranged operation — `int`,
+`int64`, `int128` and `fixed` — in every build mode. The degenerate range
+is a field to accept, not a misuse: the writer emits nothing, the reader
+consumes nothing and takes the value from `min`, and a measure adds zero,
+on the 128-bit width exactly as on the narrower ones. `compressedFloat` is
+not a ranged operation and is the exception: it quantizes across its
+bounds, so it requires `min < max`.
 
 ```dart
 w.serializeInt64(Ref(-5000000000), -5000000000, 5000000000); // 34 bits
@@ -286,12 +310,21 @@ NUL groups, and unpaired, misordered or dangling surrogates.
 
 ## The relative integer
 
-`serializeIntRelative(previous, ref)` prices strictly increasing unsigned
-32-bit sequences — sequence numbers, ack chains. `current > previous`
-always, no wrapping. A difference of 1 costs a single bit; small
-differences ride payload tiers of 5/8/13/18/23 bits; past the ladder, six
-zero flags carry `current` itself as 32 raw bits, and the reader enforces
-the ordering on that absolute form too.
+`serializeIntRelative(previous, ref)` prices strictly increasing
+sequences — sequence numbers, ack chains. `current > previous` always, no
+wrapping. A difference of 1 costs a single bit; small differences ride
+payload tiers of 5/8/13/18/23 bits; past the ladder, six zero flags carry
+`current` itself as 32 raw bits.
+
+**The domain is 0 to 2^31 - 1 inclusive** (`intRelativeMax`), for both
+`previous` and `current`. It belongs to the operation, not to Dart's int:
+a `previous` of 2^31 is caller error exactly as a negative one is. The
+reader reconstructs `current` in Dart's 64-bit int, which cannot wrap,
+then checks the result against the domain and against `previous` — in the
+one-bit tier, in each of the five bounded tiers, and in the absolute tier,
+whose 32 raw bits are read unsigned, so a group with its top bit set is
+outside the domain and refused. A refused read leaves your `Ref`
+untouched, and latches the stream.
 
 ```dart
 w.serializeIntRelative(100, Ref(101)); // 1 bit
@@ -301,7 +334,10 @@ r.serializeIntRelative(100, seq); // seq.value == 101
 ```
 
 `previous` is caller state, not wire: both sides already know it. Writing
-`current <= previous` is a contract violation, asserted in debug.
+`current <= previous`, or a `previous` outside the domain, is a contract
+violation, asserted in checked builds. A caller with a wrapping counter
+unwraps it before serializing: wrap-around is not an encoding this
+operation carries.
 
 ## Fixed point
 
@@ -380,14 +416,18 @@ supported and no slack past the data is required.
 ## Wire compatibility
 
 The same values produce the same bytes in every family implementation.
-This is not aspiration but pinned fact: the test suite carries the
-family's golden vectors — including the golden wire message covering
-every operation class, byte for byte — plus the discriminating float
-vectors, the string and wide-string pins, every relative-integer tier,
-and the fixed point shapes at every group count, all minted from the
-canonical C++ reference's own output. If your message serializes with the
-same declarations on both ends, a stream written by any family
-implementation reads in any other.
+This is not aspiration but pinned fact. `conformance/` holds the shared
+corpus, vendored verbatim from the C++ reference and synced by CI, and the
+test suite drives every vector in it through this reader — accepted
+vectors must yield the stated value and consume the stated bits, refused
+vectors must refuse. Beside it the suite carries the family's golden
+vectors — including the golden wire message covering every operation
+class, byte for byte — plus the discriminating float vectors, the string
+and wide-string pins, every relative-integer tier, and the fixed point
+shapes at every group count, all minted from the canonical C++
+reference's own output. If your message serializes with the same
+declarations on both ends, a stream written by any family implementation
+reads in any other.
 
 Two doctrines worth knowing at the edges:
 

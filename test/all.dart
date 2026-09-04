@@ -5,6 +5,7 @@ import 'dart:io';
 
 import 'bitpacker_test.dart' as bitpacker;
 import 'bits_required_test.dart' as bits_required;
+import 'conformance_test.dart' as conformance;
 import 'golden_wire_test.dart' as golden_wire;
 import 'harness.dart';
 import 'int128_test.dart' as int128;
@@ -15,6 +16,7 @@ import 'serialize_fixed_test.dart' as serialize_fixed;
 import 'serialize_float_test.dart' as serialize_float;
 import 'serialize_int_relative_test.dart' as serialize_int_relative;
 import 'serialize_int_test.dart' as serialize_int;
+import 'terminality_test.dart' as terminality;
 
 void main() {
   bits_required.run();
@@ -28,5 +30,7 @@ void main() {
   measure.run();
   golden_wire.run();
   int128.run();
+  conformance.run();
+  terminality.run();
   exit(summarize() > 0 ? 1 : 0);
 }

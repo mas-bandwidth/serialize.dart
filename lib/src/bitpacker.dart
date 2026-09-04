@@ -327,6 +327,19 @@ final class BitReader {
     _bitsRead += dest.length * 8;
   }
 
+  /// Poisons the bit index past the end of the data, so [wouldReadPastEnd]
+  /// refuses every later read — including a zero-bit one. This is the latch
+  /// STANDARD.md requires of a stream that survives a failure, in the form
+  /// the standard recommends: the existing past-end check does the work, so
+  /// the read path costs nothing. [reset] clears it.
+  ///
+  /// The bit index is no longer the refusal point afterwards, which the
+  /// standard permits: after a refusal the stream position is not part of
+  /// the contract.
+  void poison() {
+    _bitsRead = _numBits + 1;
+  }
+
   /// The number of align bits that would be read, if an align was read right
   /// now: in [0,7], where 0 means the stream is already byte aligned.
   int get alignBits => (8 - (_bitsRead % 8)) % 8;

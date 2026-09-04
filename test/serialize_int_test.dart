@@ -241,4 +241,40 @@ void run() {
       );
     }
   });
+
+  test('serializeInt128: a degenerate range costs zero bits', () {
+    // min == max is legal on the 128-bit width exactly as on the narrower
+    // ones (STANDARD.md, "int128 (ranged)"): the writer emits nothing, the
+    // measure adds nothing, and the reader consumes nothing and takes the
+    // value from min. The corpus pins the read; this pins all three streams,
+    // and it holds in checked builds, where min <= max is the assertion.
+    final bound = (Int128.fromInt(1) << 100) + Int128.fromInt(7);
+    for (final value in [
+      Int128.zero,
+      bound,
+      Int128.minValue,
+      Int128.maxValue,
+    ]) {
+      final writer = WriteStream(Uint8List(24));
+      expect(
+        writer.serializeInt128(Ref<Int128>(value), value, value),
+        'write [$value,$value]',
+      );
+      writer.flush();
+      expectEquals(writer.bitsProcessed, 0, 'the writer emits nothing');
+
+      final measure = MeasureStream();
+      measure.serializeInt128(Ref<Int128>(value), value, value);
+      expectEquals(measure.bitsProcessed, 0, 'the measure adds nothing');
+
+      final reader = ReadStream(Uint8List(0));
+      final read = Ref<Int128>(Int128.fromInt(-424242));
+      expect(
+        reader.serializeInt128(read, value, value),
+        'read [$value,$value]',
+      );
+      expectEquals(read.value, value, 'the value comes from min');
+      expectEquals(reader.bitsProcessed, 0, 'the reader consumes nothing');
+    }
+  });
 }

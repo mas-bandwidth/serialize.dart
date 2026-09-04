@@ -4,7 +4,7 @@
 library;
 
 export 'src/bitpacker.dart' show BitReader, BitWriter;
-export 'src/bits.dart' show bitsRequired, bitsRequired64;
+export 'src/bits.dart' show bitsRequired, bitsRequired64, intRelativeMax;
 export 'src/float32.dart'
     show
         doubleFromFloat32Bits,

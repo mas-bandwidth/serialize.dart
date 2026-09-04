@@ -133,4 +133,53 @@ void run() {
       'bool on empty',
     );
   });
+
+  // STANDARD.md, "bits": the bound value < 2^bits holds at every width in
+  // [1,64] and not only at 32 or fewer. The predicate is what the write side
+  // asserts, and it runs on the caller's own value: the bit writer masks a
+  // value to the field width, so a check placed after that masking is handed a
+  // value the masking already made legal and can never report the truncation
+  // it exists to diagnose.
+  test('valueFitsInBits: the caller value, before any masking', () {
+    expect(valueFitsInBits(0xFF, 8), '0xFF fits 8 bits');
+    expect(!valueFitsInBits(0x100, 8), '0x100 does not fit 8 bits');
+    expect(!valueFitsInBits(0x1FF, 8), '0x1FF does not fit 8 bits');
+    expect(valueFitsInBits(0xFFFFFFFF, 32), 'the 32-bit maximum fits 32 bits');
+    expect(!valueFitsInBits(0x100000000, 32), '2^32 does not fit 32 bits');
+    // the bound binds above 32 too, which is where a mask-then-check form
+    // stops being visible at all
+    expect(valueFitsInBits(0x1FFFFFFFF, 33), 'the 33-bit maximum fits 33 bits');
+    expect(!valueFitsInBits(0x200000000, 33), '2^33 does not fit 33 bits');
+    expect(!valueFitsInBits(-1, 63), 'a raw bit field is unsigned');
+    expect(valueFitsInBits(-1, 64), 'all 64 bits set fits 64 bits');
+  });
+
+  test('serializeBits: a value wider than the field is caller error', () {
+    if (!assertsEnabled) {
+      return; // a release build performs no write-side validation
+    }
+    for (final (value, bits) in [
+      (0x1FF, 8),
+      (0x100000000, 32),
+      (0x200000000, 33),
+      (-1, 63),
+    ]) {
+      expectThrows(
+        () => bits <= 32
+            ? WriteStream(Uint8List(16)).serializeBits(Ref<int>(value), bits)
+            : WriteStream(Uint8List(16)).serializeBits64(Ref<int>(value), bits),
+        'writing $value in $bits bits',
+      );
+      // the negative control: the widest value that does fit must not fire
+      final inside = (1 << bits) - 1;
+      expect(
+        bits <= 32
+            ? WriteStream(Uint8List(16)).serializeBits(Ref<int>(inside), bits)
+            : WriteStream(
+                Uint8List(16),
+              ).serializeBits64(Ref<int>(inside), bits),
+        'writing $inside in $bits bits',
+      );
+    }
+  });
 }

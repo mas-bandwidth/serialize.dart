@@ -75,7 +75,11 @@ parameters). [USAGE.md](USAGE.md) teaches every operation by example.
   `serializeFixed128` at 128-bit storage — Q formats, the raw scaled
   integer as an exact ranged offset, byte identical to `serializeInt64`
   wherever storage fits 64 bits.
-- **Range pricing**: `bitsRequired`, `bitsRequired64`, `bitsRequired128`.
+- **Nested objects**: `serializeObject` over a `Serializable` — inline
+  composition that contributes no bytes of its own, with no framing,
+  length prefix or alignment inserted around it.
+- **Range pricing**: `bitsRequired`, `bitsRequired64`, `bitsRequired128`,
+  and `valueFitsInBits`, the write-side bound on a raw bit field.
 - **128-bit values**: `Int128` and `UInt128`, two's complement pairs of
   64-bit halves, mirroring the family's emulated pair types.
 - **The bitpacker underneath**: `BitWriter` and `BitReader`, the family
@@ -125,10 +129,18 @@ dist/dart-sdk-3.13.2/bin/dart --enable-asserts run test/all.dart   # checked sha
 ```
 
 The suite runs every vector in [conformance/](conformance) — the shared
-corpus vendored from the C++ reference — through this reader: accepted
-vectors must yield the stated value and consume the stated bits, refused
-vectors must refuse. Nothing in it is regenerated here, so it can convict
-this port rather than agree with it.
+corpus vendored from the C++ reference, one file per covered operation —
+through this reader, writer and measure. The runner discovers the
+directory rather than naming its files, and a vector whose operation it
+cannot drive fails rather than being skipped. An accepted vector must
+yield the stated value and consume the stated bits; a vector marked
+`writer = canonical` must re-emit the whole stream byte for byte, flush
+included; a sequence stating `measure_at_least` must measure at least
+that; and a refused vector must refuse, leave the caller's scalar
+destination untouched, and leave the stream terminal, which is checked by
+issuing a further read and requiring it to fail, consume no bits and
+write nothing. Nothing in it is regenerated here, so it can convict this
+port rather than agree with it.
 
 [`interop/`](interop) takes it further: the CI `interop` job builds the C++
 reference at a pinned release and runs it head to head with this port. Both

@@ -1,5 +1,7 @@
 # serialize.dart
 
+![serialize.dart logo with a packed row of colored blocks](images/serialize.png)
+
 A bitpacking serialization library for **Dart**. Part of the serialize
 family, wire compatible with the
 [C++](https://github.com/mas-bandwidth/serialize),
@@ -17,6 +19,8 @@ is vendored verbatim from
 [mas-bandwidth/serialize](https://github.com/mas-bandwidth/serialize), along
 with the shared conformance corpus in [conformance/](conformance); CI fails
 if either drifts from upstream.
+
+If this library helps you, **[please support it](https://www.patreon.com/MasBandwidth/membership)**
 
 ## Getting it
 

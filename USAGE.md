@@ -30,7 +30,8 @@ class Player {
 bool serializePlayer(BitStream stream, Player player) {
   return stream.serializeInt(player.health, 0, 100) &&
       stream.serializeBool(player.alive) &&
-      stream.serializeFloat(player.heading);
+      stream.serializeFloat(player.heading) &&
+      stream.serializeEnd(); // the packet ends here: see "The end of a packet"
 }
 
 // write
@@ -72,15 +73,38 @@ The check model is the family standard's ("Writes assume trusted data"):
 everything, because the wire is a trust boundary.
 
 On the read side, every failure — a truncated read, a value outside its
-range, nonzero alignment padding, a malformed string — returns `false`,
-and hostile bytes never throw.
+range, nonzero alignment padding, a malformed string, a non-finite float,
+anything after the end of the packet — returns `false`, and hostile bytes
+never throw.
+
+**Every refusal has a reason.** `ReadStream.refusal` is the `Refusal`
+behind the first refused read since the stream was created or reset, or
+`null` while nothing has been refused. The list is the standard's, closed,
+and `Refusal.name` spells each one exactly as the standard and the shared
+corpus do:
+
+| `Refusal` | `name` | the rule that refused |
+|---|---|---|
+| `pastEnd` | `past_end` | a read needs more bits than the stream holds |
+| `valueOutOfRange` | `value_out_of_range` | a ranged offset past its span, a string length past its buffer, a compressed integer past its step count, an int_relative outside its domain or not increasing |
+| `nonzeroPadding` | `nonzero_padding` | a set bit in an align's padding, or in the final byte's padding at the end |
+| `trailingData` | `trailing_data` | a whole byte or more after the end of the packet |
+| `nonFiniteFloat` | `non_finite_float` | a float or double that is NaN or an infinity, or a compressed float decode that is not finite |
+| `invalidUtf8` | `invalid_utf8` | a string payload that is not well-formed UTF-8 |
+| `embeddedNul` | `embedded_nul` | a zero byte among a string's bytes |
+| `nonCanonical` | `non_canonical` | an int_relative absolute tier carrying a difference a bounded tier takes |
+
+The later refusals of a failed stream are echoes of the first and keep its
+reason. A stream that failed only because your own `Serializable.serialize`
+returned `false`, with no refused read, reports `null`: no wire rule
+refused it.
 
 **A refused read leaves its destination unwritten.** The `Ref` holder you
 passed still holds exactly what it held before the call, so a caller that
 trusts the holder over the return code is never handed a value the stream
-did not carry. Two things the rule does not reach: `serializeBytes`,
-`serializeString` and `serializeWideString` read into a buffer you own, and
-its contents after a refusal are unspecified; and a sequence of reads over
+did not carry. Two things the rule does not reach: `serializeBytes` and
+`serializeString` read into a buffer you own, and its contents after a
+refusal are unspecified; and a sequence of reads over
 an object or an array may leave earlier members written, because the rule
 is per primitive read.
 
@@ -96,6 +120,7 @@ final r = ReadStream(Uint8List.fromList([0x00])); // 8 bits of data
 r.serializeBits(v, 32); // -> false: past the end
 r.serializeBits(v, 8); // -> false too: the stream is latched
 r.failed; // -> true
+r.refusal; // -> Refusal.pastEnd, and r.refusal!.name is 'past_end'
 
 r.reset(Uint8List.fromList([0x00])); // point at fresh data, state cleared
 r.serializeBits(v, 8); // -> true
@@ -103,6 +128,7 @@ r.serializeBits(v, 8); // -> true
 // an offset smuggled into the bit headroom of a range is refused
 final r2 = ReadStream(Uint8List.fromList([0xff]));
 r2.serializeInt(ranged, 0, 200); // -> false: 8 bits carry 255, above max
+r2.refusal; // -> Refusal.valueOutOfRange
 ```
 
 One rule follows from clean refusal: check the result of any serialized
@@ -215,25 +241,31 @@ knows nor cares. The `Int128` / `UInt128` pairs are two's complement
 serialize surface needs; `fromInt` sign-extends, `toSigned()` /
 `toUnsigned()` reinterpret bit-transparently.
 
-## Floats and doubles: bit transparent
+## Floats and doubles: finite, every one bit exact
 
-`serializeFloat` (32 bits) and `serializeDouble` (64 bits) reproduce the
-transmitted pattern exactly — every pattern is legal on the wire: NaNs
-with any payload, signaling NaNs, infinities, negative zero, denormals.
-Float32 values ride a software narrowing/widening that never sets the
-quiet bit. Note that a float is 32 bits on the wire: write `fround`ed
-values or you'll be surprised by the read-back.
+`serializeFloat` (32 bits) and `serializeDouble` (64 bits) carry **finite**
+values, and reproduce each one's pattern exactly: negative zero and the
+subnormals keep their bits, never flushed or re-signed. NaN, with any
+payload or sign, and both infinities are not values the format carries. A
+reader refuses such a pattern as `non_finite_float`, tested on the raw bits
+before any conversion, and leaves your `Ref` untouched; writing one is a
+contract violation, asserted in checked builds. The check runs after the
+narrowing to float32, so a finite double above the float32 range, which
+narrows to an infinity, is caught too. Note that a float is 32 bits on the
+wire: write `fround`ed values or you'll be surprised by the read-back.
 
 ```dart
 w.serializeFloat(Ref(fround(3.1415926))); // float32 on the wire
 w.serializeDouble(Ref(1.0 / 3.0));
 w.serializeFloat(Ref(-0.0)); // -0 round trips as -0
+// w.serializeFloat(Ref(double.nan)); // AssertionError in a checked build
 ```
 
-The bit-transparency helpers are exported for code that works with raw
-patterns: `float32BitsFromDouble` / `doubleFromFloat32Bits`,
-`float64BitsFromDouble` / `doubleFromFloat64Bits`, and `fround` — the
-float32 rounding boundary the compressed float arithmetic is pinned to.
+The conversion helpers are exported for code that works with raw patterns:
+`float32BitsFromDouble` / `doubleFromFloat32Bits`, `float64BitsFromDouble`
+/ `doubleFromFloat64Bits`, `float32BitsAreFinite` / `float64BitsAreFinite`,
+and `fround` — the float32 rounding boundary the compressed float
+arithmetic is pinned to.
 
 ## The compressed float
 
@@ -252,8 +284,13 @@ w.serializeCompressedFloat(Ref(5.0), 0.0, 10.0, 0.01); // 10 bits
 ```
 
 Finite values outside `[min, max]` clamp on write; writing a non-finite
-value is a contract violation (asserted in debug, clamped in release);
-reads refuse integers smuggled above the quantization ceiling.
+value is a contract violation (asserted in debug, clamped in release), and
+so is a declaration whose top integer decodes to an infinity, even for a
+value that decodes finite. Reads refuse integers smuggled above the
+quantization ceiling (`value_out_of_range`), and a decode that rounds past
+the float32 range (`non_finite_float`): over `[3 * 2^103, FLT_MAX]` at
+resolution `2^104`, every operand is finite and the top integer still
+decodes to `+inf`.
 
 ## Nested objects
 
@@ -283,9 +320,11 @@ bool serializePacket(BitStream stream, Packet packet) =>
 ```
 
 Those 25 bits are exactly the bits the same three operations write
-unnested. A refusal inside a nested object propagates out of it, and on a
-read stream the failure state is consulted before the object is entered,
-so a nested object on an already failed stream refuses without running.
+unnested. A refusal inside a nested object propagates out of it, keeping
+its reason, and on a read stream the failure state is consulted before the
+object is entered, so a nested object on an already failed stream refuses
+without running. A nested object never reads an end: only the packet's
+top-level object does.
 
 ## Raw bytes
 
@@ -317,31 +356,55 @@ final s = Ref('');
 r.serializeString(s, 16); // s.value == 'golden'
 ```
 
-Reads validate the payload in every build mode: malformed UTF-8
-(overlongs, surrogate code points, values above U+10FFFF, truncated
-sequences, stray continuations) and interior NULs fail the read. A Dart
-string carrying an unpaired surrogate is a writer contract violation
-(debug-asserted): `utf8.encode` would replace it, so it cannot reach the
-wire faithfully.
+Reads validate the payload in every build mode. A zero byte among the
+payload is refused as `embedded_nul`; malformed UTF-8 (overlongs,
+surrogate code points, values above U+10FFFF, truncated sequences, stray
+continuations, bytes that never appear in UTF-8) as `invalid_utf8`. The
+NUL scan runs over the whole payload first, so a payload breaking both
+rules is `embedded_nul`. The decoder is strict: a replacement character
+never stands in for a byte the wire carried.
 
-## Wide strings: UTF-16 code units
+Every well-formed payload is accepted and handed back exactly: no
+normalization (`e` followed by U+0301 stays three bytes, distinct from the
+precomposed U+00E9), no stripped byte order mark — `dart:convert` drops a
+leading one, and the reader puts it back — noncharacters such as U+FFFF,
+and every plane.
 
-`serializeWideString(ref, bufferSize)` sends the unit count, then one
-32-bit group per UTF-16 code unit — never a code point — with no
-alignment anywhere: the one place the wide path deliberately differs from
-its narrow counterpart. A Dart string *is* a sequence of UTF-16 code
-units, so astral characters are two groups on the wire, exactly as the
-family's 2-byte-wchar_t ports split them. `bufferSize` counts wide
-characters.
+A Dart string carrying an unpaired surrogate, or a U+0000, is a writer
+contract violation (debug-asserted): `utf8.encode` would silently replace
+a lone surrogate with U+FFFD, so it cannot reach the wire faithfully, and
+a conforming reader refuses a NUL.
+
+Format 2.0 removed `wstring`: text travels as `serializeString`. A Dart
+string is UTF-16 already, and `serializeString` carries all of it.
+
+## The end of a packet
+
+`serializeEnd()` is the end of the packet's top-level object. **A reader
+of a packet must call it after the last field**, and that is what makes
+one packet one byte sequence: the end refuses a whole byte or more left
+over as `trailing_data` (checked first, even when every leftover bit is
+zero), and a set bit in the final byte's unused bits as
+`nonzero_padding`. It never looks at the last field's own bits, and an
+accepted end leaves the stream exactly consumed. A writer's end emits
+nothing, since the writer already zeroes the padding, and a measure's costs
+nothing, so the same serialize function ends all three:
 
 ```dart
-w.serializeWideString(Ref('\u{1f600}A'), 8); // 3 code units: 99 bits
+bool serializePacket(BitStream stream, Packet packet) =>
+    stream.serializeObject(packet.header) &&
+    stream.serializeBits(packet.payload, 8) &&
+    stream.serializeEnd();
+
+final r = ReadStream(Uint8List.fromList([0x05, 0x00]));
+r.serializeBits(v, 3); // -> true
+r.serializeEnd(); // -> false: a whole byte after the packet
+r.refusal; // -> Refusal.trailingData
 ```
 
-Unpaired surrogates in a written string are a contract violation
-(debug-asserted — the wide wire cannot carry ill-formed UTF-16, because
-conforming readers refuse it). Reads refuse groups above 0xFFFF, interior
-NUL groups, and unpaired, misordered or dangling surrogates.
+Hand the reader exactly the bytes the writer reported (`writer.data()`):
+a buffer with spare bytes after the packet is refused at its end. Like
+every read, an end on a failed stream refuses with the first reason.
 
 ## The relative integer
 
@@ -358,8 +421,11 @@ reader reconstructs `current` in Dart's 64-bit int, which cannot wrap,
 then checks the result against the domain and against `previous` — in the
 one-bit tier, in each of the five bounded tiers, and in the absolute tier,
 whose 32 raw bits are read unsigned, so a group with its top bit set is
-outside the domain and refused. A refused read leaves your `Ref`
-untouched, and latches the stream.
+outside the domain and refused (`value_out_of_range`). The absolute tier
+is canonical too: carrying a `current` no more than 69914 above
+`previous`, which a bounded tier takes, it is a second encoding of the
+value and refused as `non_canonical`, after the domain rule. A refused
+read leaves your `Ref` untouched, and latches the stream.
 
 ```dart
 w.serializeIntRelative(100, Ref(101)); // 1 bit
@@ -455,10 +521,10 @@ This is not aspiration but pinned fact. `conformance/` holds the shared
 corpus, vendored verbatim from the C++ reference and synced by CI, and the
 test suite drives every vector in it through this reader — accepted
 vectors must yield the stated value and consume the stated bits, refused
-vectors must refuse. Beside it the suite carries the family's golden
-vectors — including the golden wire message covering every operation
-class, byte for byte — plus the discriminating float vectors, the string
-and wide-string pins, every relative-integer tier, and the fixed point
+vectors must refuse for the reason they state. Beside it the suite carries
+the family's golden vectors — including the golden wire message covering
+every operation class, byte for byte — plus the discriminating float
+vectors, the string pins, every relative-integer tier, and the fixed point
 shapes at every group count, all minted from the canonical C++
 reference's own output. If your message serializes with the same
 declarations on both ends, a stream written by any family implementation
@@ -466,7 +532,8 @@ reads in any other.
 
 Two doctrines worth knowing at the edges:
 
-- **Trailing bits**: writers zero the unused bits of the final byte;
-  readers never reject a stream for their contents.
+- **Trailing bits**: writers zero the unused bits of the final byte. A
+  field read never looks at them; the packet's end refuses a set one, and
+  refuses any byte after the packet.
 - **Past-end data**: bytes past the end of the data you hand `ReadStream`
   are never read, let alone interpreted.

@@ -17,14 +17,14 @@
 // widths and on fixed point; the domain edges of int, int64, int128 and
 // int_relative; the maximum widths of bits, uint128 and the four group fixed
 // point path; both sides of the alignment rule, including the align inside a
-// zero length bytes; empty and full strings; and the wide string cases the
-// surrogate rule governs, up to the largest code unit.
+// zero length bytes; empty and full strings, and real text in several scripts,
+// four-byte characters and a leading byte order mark included; and the end,
+// after which nothing may follow.
 //
-// WHAT IT DELIBERATELY DOES NOT CARRY: a NaN payload. STANDARD.md's bit
-// transparency claim covers it, but a NaN's payload bits do not survive every
-// language's float type on the way to the wire, so a difference here would say
-// nothing about the wire format. This port pins its own NaN patterns in its own
-// suite, where the claim can be tested honestly.
+// WHAT IT DOES NOT CARRY: NaN or an infinity. Format 2.0 carries finite floats
+// only, so neither is a value either half may write. The read mode checks the
+// other direction instead: the other half's bytes with one byte appended must be
+// refused at the end, as trailing_data.
 //
 // The formatter is off for this file: it is a table of wire vectors, and the
 // aligned columns are the readable form of a table. Analysis stays on.
@@ -146,11 +146,11 @@ const List<RelativeVector> relativeVectors = [
 const List<int> floatBits = [
   0x00000000,   // +0
   0x80000000,   // -0
-  0x7F800000,   // +infinity
-  0xFF800000,   // -infinity
   0x7F7FFFFF,   // the largest finite float32
+  0xFF7FFFFF,   // the most negative finite float32
   0x00800000,   // the smallest normal
   0x00000001,   // the smallest subnormal
+  0x807FFFFF,   // the largest negative subnormal
   0x3F800000,   // 1.0
   0xBF800000,   // -1.0
 ];
@@ -158,11 +158,11 @@ const List<int> floatBits = [
 const List<int> doubleBits = [
   0x0000000000000000,   // +0
   0x8000000000000000,   // -0
-  0x7FF0000000000000,   // +infinity
-  0xFFF0000000000000,   // -infinity
   0x7FEFFFFFFFFFFFFF,   // the largest finite float64
+  0xFFEFFFFFFFFFFFFF,   // the most negative finite float64
   0x0010000000000000,   // the smallest normal
   0x0000000000000001,   // the smallest subnormal
+  0x800FFFFFFFFFFFFF,   // the largest negative subnormal
   0x3FF0000000000000,   // 1.0
   0xBFF0000000000000,   // -1.0
 ];
@@ -209,16 +209,13 @@ const List<String> strings = [
   '0123456789abcde',              // fifteen bytes: the most buffer size 16 carries
   '\u043C\u0438\u0440',           // six UTF-8 bytes, as explicit code points so no
                                   // source file encoding can reach the wire
-];
-
-const int wstringBufferSize = 8;
-const List<String> wideStrings = [
-  '',                             // empty
-  '\u043C\u0438\u0440',           // basic plane
-  '\uE000',                       // the first code unit above the surrogate block
-  '\uFFFF',                       // the largest code unit there is
-  'A\uD83D\uDE00B',                // U+1F600 as its surrogate pair: four code units
-  'abcdefg',                      // seven code units, the most buffer size 8 carries
+  '\u7881\u77F3',                 // go stones: two three-byte characters
+  '\uBC14\uB451',                 // baduk, Hangul
+  'e\u0301',                      // a combining acute, never normalized
+  '\uFEFFgo',                     // a leading byte order mark, never stripped
+  '\uFFFF',                       // a noncharacter, which travels
+  'A\u{1F600}B',                  // a four-byte character between two ASCII ones
+  '\u{20000}\u{10FFFF}',          // CJK Extension B, and the largest code point
 ];
 
 // ---------------------------------------------------------------------------
@@ -250,7 +247,6 @@ class InteropData {
   final Ref<int> filler;
   final List<Uint8List> bytes;
   final List<Ref<String>> narrowStrings;
-  final List<Ref<String>> wide;
 
   InteropData._({
     required this.bits,
@@ -278,7 +274,6 @@ class InteropData {
     required this.filler,
     required this.bytes,
     required this.narrowStrings,
-    required this.wide,
   });
 
   /// The write side: every holder carries the value the sequence pins.
@@ -308,7 +303,6 @@ class InteropData {
         filler: Ref<int>(5),
         bytes: [for (final v in bytesVectors) Uint8List(v.length)..fillRange(0, v.length, v.fill)],
         narrowStrings: [for (final s in strings) Ref<String>(s)],
-        wide: [for (final s in wideStrings) Ref<String>(s)],
       );
 
   /// The read side: zeroed holders the stream fills.
@@ -338,7 +332,6 @@ class InteropData {
         filler: Ref<int>(0),
         bytes: [for (final v in bytesVectors) Uint8List(v.length)],
         narrowStrings: [for (var i = 0; i < strings.length; i++) Ref<String>('')],
-        wide: [for (var i = 0; i < wideStrings.length; i++) Ref<String>('')],
       );
 }
 
@@ -397,7 +390,7 @@ bool interopSerialize(BitStream stream, InteropData d) {
     if (!stream.serializeIntRelative(relativeVectors[i].previous, d.relative[i])) return false;
   }
 
-  // ----- float and double, bit transparent at the domain edges
+  // ----- float and double, finite and bit exact at the domain edges
   for (final ref in d.floats) { if (!stream.serializeFloat(ref)) return false; }
   for (final ref in d.doubles) { if (!stream.serializeDouble(ref)) return false; }
 
@@ -414,17 +407,13 @@ bool interopSerialize(BitStream stream, InteropData d) {
     if (!stream.serializeBytes(block)) return false;
   }
 
-  // ----- string: empty, full, and multi-byte UTF-8
+  // ----- string: empty, full, and real text, byte for byte
   for (final ref in d.narrowStrings) {
     if (!stream.serializeString(ref, stringBufferSize)) return false;
   }
 
-  // ----- wstring: empty, basic plane, the code unit boundaries, a pair, full
-  for (final ref in d.wide) {
-    if (!stream.serializeWideString(ref, wstringBufferSize)) return false;
-  }
-
-  return true;
+  // ----- the end of the message: nothing may follow it
+  return stream.serializeEnd();
 }
 
 /// What a conforming reader recovers. Everything is exact except the compressed
@@ -507,10 +496,9 @@ List<String> interopCheck(InteropData d) {
     if (!same) problems.add('bytes[$i]: got $block, expected $want');
   }
   for (var i = 0; i < strings.length; i++) {
-    equal('string[$i]', d.narrowStrings[i].value, strings[i]);
-  }
-  for (var i = 0; i < wideStrings.length; i++) {
-    equal('wstring[$i]', d.wide[i].value, wideStrings[i]);
+    // code unit for code unit: a stripped byte order mark or a normalization
+    // would still print alike
+    equal('string[$i]', d.narrowStrings[i].value.codeUnits.join(' '), strings[i].codeUnits.join(' '));
   }
 
   return problems;
@@ -556,7 +544,15 @@ void read(String path) {
   if (!same) {
     throw StateError('interop dart: re-encoded bytes differ from $path');
   }
-  stdout.writeln('interop dart: decoded and re-encoded ${input.length} bytes from $path, byte identical');
+  // the message ends at its end: the same bytes with one zero byte after them
+  // are a second encoding of the same message, refused as trailing data
+  final longer = Uint8List(input.length + 1)..setAll(0, input);
+  final stream = ReadStream(longer);
+  if (interopSerialize(stream, InteropData.empty()) || stream.refusal != Refusal.trailingData) {
+    throw StateError('interop dart: $path with a byte appended was not refused as trailing_data');
+  }
+  stdout.writeln('interop dart: decoded and re-encoded ${input.length} bytes from $path, byte identical; '
+      'a byte appended is refused');
 }
 
 /// The hostile half: every proper prefix of a valid stream is a truncated

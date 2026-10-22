@@ -40,6 +40,9 @@ void _expectLatched(ReadStream stream, String what) {
     '$what: a later zero-bit 128-bit read fails',
   );
   expectEquals(wide.value, Int128.zero, '$what: and writes nothing');
+  final reason = stream.refusal;
+  expect(!stream.serializeEnd(), '$what: a later end fails');
+  expectEquals(stream.refusal, reason, '$what: the echoes keep the reason');
 }
 
 void run() {
@@ -113,10 +116,57 @@ void run() {
     expect(!stream.serializeBits(Ref<int>(0), 8), 'the empty stream refuses');
     expect(stream.failed, 'latched');
 
+    expectEquals(stream.refusal, Refusal.pastEnd, 'the reason');
+
     stream.reset(_room());
     expect(!stream.failed, 'reset clears the failure');
+    expectEquals(stream.refusal, null, 'and its reason');
     final value = Ref<int>(0);
     expect(stream.serializeBits(value, 8), 'and reads work again');
     expectEquals(value.value, 0xAB, 'the byte comes back');
   });
+
+  test('the reason is the FIRST refusal\'s', () {
+    // a range refusal, then a read past the end, then an end: every later
+    // refusal is an echo, and the stream reports the first
+    final stream = ReadStream(Uint8List.fromList(const [0x0F]));
+    expect(!stream.serializeInt(Ref<int>(0), 0, 8), 'offset 15 refused');
+    expectEquals(stream.refusal, Refusal.valueOutOfRange, 'first reason');
+    expect(!stream.serializeBits(Ref<int>(0), 32), 'past the end');
+    expect(!stream.serializeEnd(), 'end');
+    expectEquals(stream.refusal, Refusal.valueOutOfRange, 'still the first');
+  });
+
+  test('an object keeps the reason of the read that refused inside it', () {
+    final stream = ReadStream(Uint8List.fromList(const [0x80]));
+    expect(!stream.serializeObject(_Field(7)), 'refused');
+    expectEquals(stream.refusal, Refusal.nonzeroPadding, 'the inner reason');
+    _expectLatched(stream, 'object');
+  });
+
+  test('an object that refuses on its own is terminal and names no rule', () {
+    // the caller's serialize returned false with no refused read: the stream
+    // latches, and no wire rule is blamed for it
+    final stream = ReadStream(_room());
+    expect(!stream.serializeObject(_Refuser()), 'refused');
+    expectEquals(stream.refusal, null, 'no wire reason');
+    _expectLatched(stream, 'caller refusal');
+  });
+}
+
+/// An object of [bits] bits and an align.
+final class _Field implements Serializable {
+  _Field(this.bits);
+
+  final int bits;
+
+  @override
+  bool serialize(BitStream stream) =>
+      stream.serializeBits(Ref<int>(0), bits) && stream.serializeAlign();
+}
+
+/// An object whose own serialize refuses without a refused read.
+final class _Refuser implements Serializable {
+  @override
+  bool serialize(BitStream stream) => false;
 }

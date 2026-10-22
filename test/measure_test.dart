@@ -60,7 +60,7 @@ void run() {
     );
   });
 
-  test('bytes and string charge 7 align bits; wstring charges none', () {
+  test('bytes and string charge 7 align bits; an end charges none', () {
     final bytesMeasure = MeasureStream();
     bytesMeasure.serializeBytes(Uint8List(5));
     expectEquals(bytesMeasure.bitsProcessed, 7 + 40, 'bytes: 7 + 8n');
@@ -73,13 +73,10 @@ void run() {
       'string: length + 7 + bytes',
     );
 
-    final wideMeasure = MeasureStream();
-    wideMeasure.serializeWideString(Ref<String>('мир'), 8);
-    expectEquals(
-      wideMeasure.bitsProcessed,
-      3 + 96,
-      'wstring: length + 32 per unit, no alignment',
-    );
+    final endMeasure = MeasureStream();
+    endMeasure.serializeBits(Ref<int>(5), 3);
+    expect(endMeasure.serializeEnd(), 'a measure refuses nothing');
+    expectEquals(endMeasure.bitsProcessed, 3, 'end: zero bits');
   });
 
   test('measure >= bits written for the golden-shaped ops at every offset', () {

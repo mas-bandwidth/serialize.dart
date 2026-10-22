@@ -9,7 +9,9 @@
 // Reads VALIDATE ALWAYS: every refusal rule of STANDARD.md binds in every
 // build mode, out-of-range or truncated input refuses cleanly as a false
 // return, and hostile bytes never throw. A failure is terminal: ReadStream
-// latches it, and every later read on that stream fails until reset.
+// latches it, and every later read on that stream fails until reset. Every
+// refusal names its rule from the closed list in refusal.dart, and the
+// stream keeps the first one.
 //
 // Dart has no by-reference parameters, so values pass through [Ref] holders.
 // serializeBytes fills its Uint8List in place.
@@ -21,6 +23,7 @@ import 'bitpacker.dart';
 import 'bits.dart';
 import 'float32.dart';
 import 'int128.dart';
+import 'refusal.dart';
 
 /// A mutable holder standing in for the reference implementation's
 /// by-reference parameters: the writer reads [value], the reader assigns it.
@@ -243,12 +246,19 @@ bool _isValidUtf8(Uint8List bytes, int length) {
   return true;
 }
 
+// Does the payload open with the UTF-8 encoding of U+FEFF, EF BB BF?
+bool _startsWithByteOrderMark(Uint8List bytes) =>
+    bytes.length >= 3 &&
+    bytes[0] == 0xEF &&
+    bytes[1] == 0xBB &&
+    bytes[2] == 0xBF;
+
 /*
-    The string and wstring payloads are well formed BY CONTRACT (STANDARD.md,
-    adopted 2026-08-15): a Dart String carrying an unpaired surrogate is a
-    writer contract violation on both paths — utf8.encode would replace it,
-    and the wstring wire forbids it — debug-asserted per the writes-trusted
-    doctrine. Referenced only from asserts; compiled out in release.
+    The string payload is well formed BY CONTRACT (STANDARD.md, "string"): a
+    Dart String carrying an unpaired surrogate is a writer contract violation
+    — utf8.encode would silently replace it with U+FFFD — debug-asserted per
+    the writes-trusted doctrine. Referenced only from asserts; compiled out in
+    release.
 */
 bool _isValidUtf16(String value) {
   var i = 0;
@@ -327,10 +337,10 @@ abstract interface class BitStream {
   /// Serializes a boolean as one bit.
   bool serializeBool(Ref<bool> value);
 
-  /// Serializes a bit-transparent IEEE-754 single-precision float.
+  /// Serializes a finite IEEE-754 single-precision float, bit exactly.
   bool serializeFloat(Ref<double> value);
 
-  /// Serializes a bit-transparent IEEE-754 double-precision float.
+  /// Serializes a finite IEEE-754 double-precision float, bit exactly.
   bool serializeDouble(Ref<double> value);
 
   /// Serializes a float quantized to a resolution over [min,max].
@@ -344,11 +354,8 @@ abstract interface class BitStream {
   /// Serializes data.length raw bytes, aligning first.
   bool serializeBytes(Uint8List data);
 
-  /// Serializes a null-terminated UTF-8 string against a buffer size.
+  /// Serializes a UTF-8 string against a buffer size.
   bool serializeString(Ref<String> value, int bufferSize);
-
-  /// Serializes a wide string: one 32-bit group per UTF-16 code unit.
-  bool serializeWideString(Ref<String> value, int bufferSize);
 
   /// Serializes an alignment to the next byte boundary.
   bool serializeAlign();
@@ -360,6 +367,12 @@ abstract interface class BitStream {
 
   /// Serializes [current] relative to [previous], current > previous.
   bool serializeIntRelative(int previous, Ref<int> current);
+
+  /// Serializes the end of the object: a reader calls it after the last
+  /// field of the top-level object it was handed, and refuses any whole byte
+  /// after it and any set bit in the final byte's padding. A writer's end
+  /// emits nothing, and a measure's costs nothing.
+  bool serializeEnd();
 
   /// Serializes a fixed point value on storage of 8, 16, 32 or 64 bits.
   bool serializeFixed(
@@ -556,17 +569,24 @@ final class WriteStream implements BitStream {
   }
 
   /// Writes the 32 bits of the IEEE-754 single-precision representation of
-  /// the held value, as one 32-bit group. Bit transparent: every pattern is
-  /// legal on the wire and NaN payloads ride byte-for-byte.
+  /// the held value, as one 32-bit group. The value must be finite AFTER it
+  /// narrows to float32 — a finite double above the float32 range narrows to
+  /// an infinity — and a non-finite one is caller error, asserted in debug
+  /// (STANDARD.md, "Finite values only"). Every finite pattern is bit exact,
+  /// negative zero and the subnormals included.
   bool serializeFloat(Ref<double> value) {
-    _writer.writeBits(float32BitsFromDouble(value.value), 32);
+    final bits = float32BitsFromDouble(value.value);
+    assert(float32BitsAreFinite(bits));
+    _writer.writeBits(bits, 32);
     return true;
   }
 
   /// Writes the 64 bits of the IEEE-754 double-precision representation of
-  /// the held value, as one 64-bit group. Bit transparent.
+  /// the held value, as one 64-bit group. The value must be finite, asserted
+  /// in debug. Bit exact.
   bool serializeDouble(Ref<double> value) {
     final bits = float64BitsFromDouble(value.value);
+    assert(float64BitsAreFinite(bits));
     _writer.writeBits(bits & 0xFFFFFFFF, 32);
     _writer.writeBits(bits >>> 32, 32);
     return true;
@@ -577,7 +597,8 @@ final class WriteStream implements BitStream {
   /// in float32 with TWO roundings — the product rounds before 0.5 is added
   /// — and the quantized integer is clamped to the step count (the normative
   /// integer clamp, 2026-08-23). Writing a non-finite value is
-  /// non-conforming and asserts in debug. Lossy by construction.
+  /// non-conforming and asserts in debug, and so does a declaration whose
+  /// top decodes to an infinity. Lossy by construction.
   bool serializeCompressedFloat(
     Ref<double> value,
     double min,
@@ -586,6 +607,12 @@ final class WriteStream implements BitStream {
   ) {
     _compressedFloatParams(min, max, resolution);
     final params = _floatParams;
+    // a declaration whose top integer decodes to an infinity is
+    // non-conforming as a whole (STANDARD.md, format 2.0), so the writer
+    // asserts it even for values that decode finite: the decode of
+    // maxIntegerValue is min + delta, rounded once. Write side only: a
+    // reader refuses the non-finite decode itself, as non_finite_float
+    assert(fround(params.min + params.delta).isFinite);
     // the float parameter type of the reference: the value rounds to float32
     // at this boundary
     final value32 = fround(value.value);
@@ -630,33 +657,17 @@ final class WriteStream implements BitStream {
 
   /// Writes a UTF-8 string: the byte length as serializeInt in
   /// [0,bufferSize-1], then the bytes via [serializeBytes] — which aligns.
-  /// The payload is well-formed UTF-8 by the writer's contract; a Dart
-  /// string with unpaired surrogates violates it (debug-asserted).
+  /// The payload is well-formed UTF-8 with no zero byte by the writer's
+  /// contract; a Dart string with an unpaired surrogate or a U+0000 violates
+  /// it (debug-asserted).
   bool serializeString(Ref<String> value, int bufferSize) {
     assert(_isValidUtf16(value.value)); // the writer's contract, debug only
+    assert(!value.value.contains('\u0000')); // likewise: no embedded NUL
     final encoded = utf8.encode(value.value);
     assert(encoded.length < bufferSize);
     final length = Ref<int>(encoded.length);
     serializeInt(length, 0, bufferSize - 1);
     serializeBytes(encoded);
-    return true;
-  }
-
-  /// Writes a wide string: the length in UTF-16 code units as serializeInt
-  /// in [0,bufferSize-1], then each code unit as a 32-bit group. No
-  /// alignment is performed anywhere in this operation. bufferSize counts
-  /// wide characters, not bytes. The payload is well-formed UTF-16 by the
-  /// writer's contract (debug-asserted); surrogate pairs are valid — they
-  /// are how astral text travels.
-  bool serializeWideString(Ref<String> value, int bufferSize) {
-    assert(_isValidUtf16(value.value)); // the writer's contract, debug only
-    final string = value.value;
-    assert(string.length < bufferSize);
-    final length = Ref<int>(string.length);
-    serializeInt(length, 0, bufferSize - 1);
-    for (var i = 0; i < string.length; i++) {
-      _writer.writeBits(string.codeUnitAt(i), 32);
-    }
     return true;
   }
 
@@ -669,6 +680,10 @@ final class WriteStream implements BitStream {
 
   /// Writes a nested object inline, adding no bytes of its own.
   bool serializeObject(Serializable object) => object.serialize(this);
+
+  /// Writes the end of the object: nothing at all. The unused bits of the
+  /// final byte are already zero, which is what a reader's end checks.
+  bool serializeEnd() => true;
 
   /// Writes [current] relative to [previous], where current > previous: the
   /// ladder of one-bit flags (STANDARD.md, "int_relative"). Both values lie
@@ -790,32 +805,49 @@ final class WriteStream implements BitStream {
 /// refusal rule of STANDARD.md binds in every build mode, a refused
 /// operation returns false, and hostile bytes never throw. A failed read is
 /// terminal for the stream — nothing after the failing operation has a
-/// defined position.
+/// defined position — and [refusal] names the rule that refused it.
+///
+/// A packet reader calls [serializeEnd] after the last field of the packet's
+/// top-level object: without it, trailing bytes and padding go unexamined.
 final class ReadStream implements BitStream {
   final BitReader _reader;
+  Refusal? _refusal;
 
   /// Creates a read stream over the bitpacked data in [data]. Any length is
   /// supported; no allocation slack past the data is required.
   ReadStream(Uint8List data) : _reader = BitReader(data);
 
   /// Points the stream at a data array and clears all read state, including
-  /// the failure latch: re-initialization is the one operation that clears a
-  /// failure (STANDARD.md, "Reader Obligations").
-  void reset(Uint8List data) => _reader.reset(data);
+  /// the failure latch and its reason: re-initialization is the one
+  /// operation that clears a failure (STANDARD.md, "Reader Obligations").
+  void reset(Uint8List data) {
+    _reader.reset(data);
+    _refusal = null;
+  }
 
-  /// Refuses the current read and latches the failure, so every later read on
-  /// this stream fails too, consuming no bits and writing no destination.
-  /// Always returns false, so a refusing read reads `return _refuse();`.
+  /// Refuses the current read for [reason] and latches the failure, so every
+  /// later read on this stream fails too, consuming no bits and writing no
+  /// destination. The FIRST refusal's reason is kept: a later refusal on a
+  /// failed stream is an echo of it. Always returns false, so a refusing read
+  /// reads `return _refuse(Refusal.pastEnd);`.
   ///
   /// The latch is the recommended form: the bit index is poisoned past the
   /// end of the data and the past-end check already on every read path does
   /// the rest, which costs the read path nothing. The zero-bit paths — a
   /// degenerate range consumes nothing and so has no past-end check of its
   /// own — ask [BitReader.wouldReadPastEnd] for zero bits to see the latch.
-  bool _refuse() {
+  bool _refuse(Refusal reason) {
+    _refusal ??= reason;
     _reader.poison();
     return false;
   }
+
+  /// Why this stream refused: the reason for the first refused read since the
+  /// stream was created or [reset], spelled by [Refusal.name] exactly as
+  /// STANDARD.md spells it. Null while nothing has been refused, and on a
+  /// stream that failed only because a caller's own [Serializable.serialize]
+  /// returned false without a refused read, which names no wire rule.
+  Refusal? get refusal => _refusal;
 
   /// True once a read on this stream has failed, and until [reset]. Every
   /// read after a failure fails: nothing after the failing operation has a
@@ -833,7 +865,7 @@ final class ReadStream implements BitStream {
   bool serializeBits(Ref<int> value, int bits) {
     assert(bits >= 1 && bits <= 32);
     if (_reader.wouldReadPastEnd(bits)) {
-      return _refuse();
+      return _refuse(Refusal.pastEnd);
     }
     value.value = _reader.readBits(bits);
     return true;
@@ -848,7 +880,7 @@ final class ReadStream implements BitStream {
     // the same stream, so checking their sum accepts and refuses exactly the
     // same inputs as checking each in turn
     if (_reader.wouldReadPastEnd(bits)) {
-      return _refuse();
+      return _refuse(Refusal.pastEnd);
     }
     if (bits <= 32) {
       value.value = _reader.readBits(bits);
@@ -877,11 +909,11 @@ final class ReadStream implements BitStream {
     // the diff is exact: int32 bounds keep max - min within [0, 2^32 - 1]
     final bits = (max - min).bitLength;
     if (_reader.wouldReadPastEnd(bits)) {
-      return _refuse();
+      return _refuse(Refusal.pastEnd);
     }
     final unsignedValue = _reader.readBits(bits);
     if (unsignedValue > max - min) {
-      return _refuse();
+      return _refuse(Refusal.valueOutOfRange);
     }
     // add in the unsigned domain, then convert back to the signed 32-bit
     // value the range describes
@@ -902,7 +934,7 @@ final class ReadStream implements BitStream {
       return true;
     }
     if (_reader.wouldReadPastEnd(bits)) {
-      return _refuse();
+      return _refuse(Refusal.pastEnd);
     }
     int unsignedValue;
     if (bits <= 32) {
@@ -915,7 +947,7 @@ final class ReadStream implements BitStream {
     }
     // compare in the unsigned domain: the range may be wider than 2^63
     if (unsignedGreaterThan(unsignedValue, max - min)) {
-      return _refuse();
+      return _refuse(Refusal.valueOutOfRange);
     }
     // add in the unsigned domain: wraps two's complement
     value.value = unsignedValue + min;
@@ -942,11 +974,11 @@ final class ReadStream implements BitStream {
       return true;
     }
     if (_reader.wouldReadPastEnd(bits)) {
-      return _refuse();
+      return _refuse(Refusal.pastEnd);
     }
     final offset = _readGroups(bits);
     if (offset > maxU - minU) {
-      return _refuse();
+      return _refuse(Refusal.valueOutOfRange);
     }
     // add in the unsigned domain: wraps two's complement
     value.value = (offset + minU).toSigned();
@@ -994,7 +1026,7 @@ final class ReadStream implements BitStream {
     // one bounds check for all four groups: the reads are sequential on the
     // same stream, so checking their sum refuses exactly the same inputs
     if (_reader.wouldReadPastEnd(128)) {
-      return _refuse();
+      return _refuse(Refusal.pastEnd);
     }
     final loLow = _reader.readBits(32);
     final loHigh = _reader.readBits(32);
@@ -1007,39 +1039,52 @@ final class ReadStream implements BitStream {
   /// Reads a boolean from one bit.
   bool serializeBool(Ref<bool> value) {
     if (_reader.wouldReadPastEnd(1)) {
-      return _refuse();
+      return _refuse(Refusal.pastEnd);
     }
     value.value = _reader.readBits(1) != 0;
     return true;
   }
 
-  /// Reads a bit-transparent float: the holder receives exactly the bits
-  /// read — no canonicalization, no quieting, no refusal of any pattern.
+  /// Reads a finite float: the holder receives exactly the bits read — no
+  /// flush, no canonicalization, negative zero and the subnormals kept. A
+  /// pattern whose exponent field is all ones (NaN with any payload, either
+  /// infinity) is refused as [Refusal.nonFiniteFloat], tested on the raw
+  /// bits before any conversion, and the holder is untouched.
   bool serializeFloat(Ref<double> value) {
     if (_reader.wouldReadPastEnd(32)) {
-      return _refuse();
+      return _refuse(Refusal.pastEnd);
     }
-    value.value = doubleFromFloat32Bits(_reader.readBits(32));
+    final bits = _reader.readBits(32);
+    if (!float32BitsAreFinite(bits)) {
+      return _refuse(Refusal.nonFiniteFloat);
+    }
+    value.value = doubleFromFloat32Bits(bits);
     return true;
   }
 
-  /// Reads a bit-transparent double.
+  /// Reads a finite double, bit exactly, with the same refusal at 64 bits.
   bool serializeDouble(Ref<double> value) {
     // one bounds check for both groups: the reads are sequential on the same
     // stream, so checking their sum refuses exactly the same inputs
     if (_reader.wouldReadPastEnd(64)) {
-      return _refuse();
+      return _refuse(Refusal.pastEnd);
     }
     final lo = _reader.readBits(32);
     final hi = _reader.readBits(32);
-    value.value = doubleFromFloat64Bits((hi << 32) | lo);
+    final bits = (hi << 32) | lo;
+    if (!float64BitsAreFinite(bits)) {
+      return _refuse(Refusal.nonFiniteFloat);
+    }
+    value.value = doubleFromFloat64Bits(bits);
     return true;
   }
 
   /// Reads a compressed float: exactly the declaration's bit count, decoded
   /// as quantum index / step count * delta + min, every step rounding to
   /// float32 — the product rounds BEFORE min is added, which the conformance
-  /// vectors pin bit-exactly. An integer above the step count is refused.
+  /// vectors pin bit-exactly. An integer above the step count is refused, and
+  /// so is a decode that rounds past the float32 range: the holder never
+  /// receives an infinity.
   bool serializeCompressedFloat(
     Ref<double> value,
     double min,
@@ -1049,11 +1094,11 @@ final class ReadStream implements BitStream {
     _compressedFloatParams(min, max, resolution);
     final params = _floatParams;
     if (_reader.wouldReadPastEnd(params.bits)) {
-      return _refuse();
+      return _refuse(Refusal.pastEnd);
     }
     final integerValue = _reader.readBits(params.bits);
     if (integerValue > params.maxIntegerValue) {
-      return _refuse();
+      return _refuse(Refusal.valueOutOfRange);
     }
     final normalized = fround(
       fround(integerValue.toDouble()) /
@@ -1062,7 +1107,14 @@ final class ReadStream implements BitStream {
     // the product must round to float32 BEFORE min is added: a fused decode
     // is one ulp off whenever min is non-zero
     final scaled = fround(normalized * params.delta);
-    value.value = fround(scaled + params.min);
+    final decoded = fround(scaled + params.min);
+    // every operand is finite and the integer is in range, and still the
+    // final add can round past the float32 maximum (STANDARD.md, "The decode
+    // must be finite"): refused whatever the declaration, holder untouched
+    if (!decoded.isFinite) {
+      return _refuse(Refusal.nonFiniteFloat);
+    }
+    value.value = decoded;
     return true;
   }
 
@@ -1072,86 +1124,57 @@ final class ReadStream implements BitStream {
   /// not read [data] back on a false return; this reader refuses before it
   /// copies anything, so here the buffer is in fact untouched.
   bool serializeBytes(Uint8List data) {
+    // the align comes first, so set padding is refused as nonzero_padding
+    // even when the payload would also run past the end
     if (!serializeAlign()) {
-      return _refuse();
+      return false; // refused by the align, which named the reason
     }
     // compare in bytes rather than bits, consistent with the 64-bit
     // bookkeeping of the reference
     if (data.length > _reader.bitsRemaining ~/ 8) {
-      return _refuse();
+      return _refuse(Refusal.pastEnd);
     }
     _reader.readBytes(data);
     return true;
   }
 
   /// Reads a UTF-8 string. Malformed payloads are refused in every build
-  /// mode (STANDARD.md, adopted 2026-08-15): an interior NUL among the
-  /// transmitted bytes fails the read — the two-lengths smuggling primitive
-  /// — and so does invalid UTF-8. On refusal the holder is untouched.
+  /// mode (STANDARD.md, "string"): a zero byte among the transmitted bytes
+  /// is [Refusal.embeddedNul] — the two-lengths smuggling primitive — and a
+  /// payload that is not well formed is [Refusal.invalidUtf8]. The NUL scan
+  /// runs over the whole payload first, so a payload breaking both rules is
+  /// embedded_nul. Every well-formed payload is accepted and decoded exactly:
+  /// no normalization, no stripped byte order mark, no replacement. On
+  /// refusal the holder is untouched.
   bool serializeString(Ref<String> value, int bufferSize) {
     final length = Ref<int>(0);
     if (!serializeInt(length, 0, bufferSize - 1)) {
-      return _refuse();
+      return false; // refused by the length field, which named the reason
     }
     final bytes = Uint8List(length.value);
     if (!serializeBytes(bytes)) {
-      return _refuse();
+      return false; // refused by the bytes, which named the reason
     }
     // interior NUL first: NUL is valid UTF-8, so the validator below cannot
-    // catch it, and a conforming writer derives the length from the
-    // terminator, so a zero byte only arrives doctored
+    // catch it, and a conforming writer is never handed one, so a zero byte
+    // only arrives doctored
     for (var i = 0; i < bytes.length; i++) {
       if (bytes[i] == 0) {
-        return _refuse();
+        return _refuse(Refusal.embeddedNul);
       }
     }
     if (!_isValidUtf8(bytes, bytes.length)) {
-      return _refuse();
+      return _refuse(Refusal.invalidUtf8);
     }
-    value.value = utf8.decode(bytes);
-    return true;
-  }
-
-  /// Reads a wide string: each 32-bit group carries one UTF-16 code unit.
-  /// Malformed payloads are refused in every build mode: a group above
-  /// 0xFFFF is not a code unit, an unpaired surrogate fails the read — a
-  /// high without its low, a low with no high before it, or a dangling high
-  /// as the final group — and so does an interior NUL group. Well-formed
-  /// surrogate pairs pass: they are how astral text travels.
-  bool serializeWideString(Ref<String> value, int bufferSize) {
-    final length = Ref<int>(0);
-    if (!serializeInt(length, 0, bufferSize - 1)) {
-      return _refuse();
-    }
-    final units = Uint16List(length.value);
-    var pending = false; // a high surrogate awaiting its pair
-    for (var i = 0; i < length.value; i++) {
-      if (_reader.wouldReadPastEnd(32)) {
-        return _refuse();
-      }
-      final character = _reader.readBits(32);
-      if (character > 0xFFFF) {
-        return _refuse(); // not a UTF-16 code unit: nothing conforming emits one
-      }
-      if (character == 0) {
-        return _refuse(); // interior NUL: the two-lengths smuggling primitive
-      }
-      if (pending) {
-        if (character < 0xDC00 || character > 0xDFFF) {
-          return _refuse(); // high surrogate without its low
-        }
-        pending = false;
-      } else if (character >= 0xDC00 && character <= 0xDFFF) {
-        return _refuse(); // low surrogate with no high before it
-      } else if (character >= 0xD800 && character <= 0xDBFF) {
-        pending = true;
-      }
-      units[i] = character;
-    }
-    if (pending) {
-      return _refuse(); // the final group is a dangling high surrogate
-    }
-    value.value = String.fromCharCodes(units);
+    // the validator above has already refused everything malformed, and the
+    // decoder stays strict regardless: a replacement character must never
+    // stand in for a byte the wire carried
+    final text = utf8.decode(bytes, allowMalformed: false);
+    // dart:convert drops a LEADING byte order mark, and the wire's bytes are
+    // the text: U+FEFF is a character like any other and must round trip
+    // (STANDARD.md, "string": no stripped byte order mark). It is put back
+    // here; one anywhere else in the payload is kept by the decoder itself
+    value.value = _startsWithByteOrderMark(bytes) ? '\uFEFF$text' : text;
     return true;
   }
 
@@ -1159,10 +1182,10 @@ final class ReadStream implements BitStream {
   /// the padding bits are zero, and refuses if they are not.
   bool serializeAlign() {
     if (_reader.wouldReadPastEnd(_reader.alignBits)) {
-      return _refuse();
+      return _refuse(Refusal.pastEnd);
     }
     if (!_reader.readAlign()) {
-      return _refuse();
+      return _refuse(Refusal.nonzeroPadding);
     }
     return true;
   }
@@ -1170,13 +1193,44 @@ final class ReadStream implements BitStream {
   /// Reads a nested object inline, consuming no bits of its own. The failure
   /// state is consulted first, so a nested object refuses on a stream that
   /// has already failed, and a refusal inside the object propagates out of
-  /// the composition rather than being swallowed by it.
+  /// the composition rather than being swallowed by it, keeping its reason.
   bool serializeObject(Serializable object) {
     if (failed) {
       return false;
     }
     if (!object.serialize(this)) {
-      return _refuse();
+      // the object's own serialize returned false: latch the failure so it
+      // is terminal, keeping the reason of the read that refused, if any
+      _reader.poison();
+      return false;
+    }
+    return true;
+  }
+
+  /// Reads the end of the object (STANDARD.md, "end"). The object ends at
+  /// the bit index after its last field, and the stream must end there too:
+  /// a whole byte or more left over is [Refusal.trailingData], checked first,
+  /// and otherwise the remaining zero to seven bits are the final byte's
+  /// padding, read and required zero, or [Refusal.nonzeroPadding]. An
+  /// accepted end leaves the stream exactly consumed. On a failed stream the
+  /// end is refused like any read, keeping the first refusal's reason.
+  bool serializeEnd() {
+    if (failed) {
+      return _refuse(Refusal.pastEnd); // an echo: the first reason is kept
+    }
+    final remaining = _reader.bitsRemaining;
+    if (remaining >= 8) {
+      return _refuse(Refusal.trailingData);
+    }
+    // fewer than 8 bits remain here, so this is all of them: the final
+    // byte's padding. The field bits before it are the last field's and are
+    // never read
+    final paddingBits = remaining & 7;
+    if (paddingBits > 0) {
+      final padding = _reader.readBits(paddingBits);
+      if (padding != 0) {
+        return _refuse(Refusal.nonzeroPadding);
+      }
     }
     return true;
   }
@@ -1188,25 +1242,29 @@ final class ReadStream implements BitStream {
   /// refused unless it lies in the domain and is strictly greater. That binds
   /// in the one-bit tier, in each bounded tier, and in the absolute tier,
   /// whose 32 raw bits are unsigned: a value with the top bit set is outside
-  /// the domain and refused. The holder is untouched on refusal.
+  /// the domain and refused. Those refusals are [Refusal.valueOutOfRange].
+  /// The absolute tier is canonical too: carrying a value no more than the
+  /// last bounded tier's top above [previous], which a bounded tier would
+  /// have taken, it is refused as [Refusal.nonCanonical], after the domain
+  /// rule. The holder is untouched on refusal.
   bool serializeIntRelative(int previous, Ref<int> current) {
     assert(previous >= 0 && previous <= intRelativeMax);
     if (_reader.wouldReadPastEnd(1)) {
-      return _refuse();
+      return _refuse(Refusal.pastEnd);
     }
     if (_reader.readBits(1) != 0) {
       // Dart's int is 64 bits wide, so the reconstruction cannot wrap: the
       // check below is what keeps the result in the domain
       final reconstructed = previous + 1;
       if (reconstructed > intRelativeMax) {
-        return _refuse();
+        return _refuse(Refusal.valueOutOfRange);
       }
       current.value = reconstructed;
       return true;
     }
     for (var tier = 0; tier < _relativeTierMin.length; tier++) {
       if (_reader.wouldReadPastEnd(1)) {
-        return _refuse();
+        return _refuse(Refusal.pastEnd);
       }
       if (_reader.readBits(1) != 0) {
         // the tier payload is serialize_int over the tier's bounds
@@ -1214,15 +1272,18 @@ final class ReadStream implements BitStream {
         final tierMax = _relativeTierMax[tier];
         final bits = (tierMax - tierMin).bitLength;
         if (_reader.wouldReadPastEnd(bits)) {
-          return _refuse();
+          return _refuse(Refusal.pastEnd);
         }
         final offset = _reader.readBits(bits);
         if (offset > tierMax - tierMin) {
-          return _refuse();
+          return _refuse(Refusal.valueOutOfRange);
         }
         final reconstructed = previous + tierMin + offset;
-        if (reconstructed > intRelativeMax) {
-          return _refuse();
+        // the domain and the order, as in every tier: the order holds by
+        // construction while the payload decodes over its tier's minimum,
+        // and is checked here rather than assumed
+        if (reconstructed > intRelativeMax || reconstructed <= previous) {
+          return _refuse(Refusal.valueOutOfRange);
         }
         current.value = reconstructed;
         return true;
@@ -1232,11 +1293,17 @@ final class ReadStream implements BitStream {
     // unsigned: readBits returns the group zero extended, so a top bit set
     // shows up as a value above the domain rather than as a negative
     if (_reader.wouldReadPastEnd(32)) {
-      return _refuse();
+      return _refuse(Refusal.pastEnd);
     }
     final reconstructed = _reader.readBits(32);
     if (reconstructed > intRelativeMax || reconstructed <= previous) {
-      return _refuse();
+      return _refuse(Refusal.valueOutOfRange);
+    }
+    // the domain and ordering rule came first, so the difference here is
+    // positive and exact in Dart's 64-bit int: a difference a bounded tier
+    // carries has a shorter encoding, and this one is a second encoding of it
+    if (reconstructed - previous <= _relativeTierMax.last) {
+      return _refuse(Refusal.nonCanonical);
     }
     current.value = reconstructed;
     return true;
@@ -1266,16 +1333,16 @@ final class ReadStream implements BitStream {
     int offset;
     if (bits <= 32) {
       if (_reader.wouldReadPastEnd(bits)) {
-        return _refuse();
+        return _refuse(Refusal.pastEnd);
       }
       offset = _reader.readBits(bits);
     } else {
       if (_reader.wouldReadPastEnd(32)) {
-        return _refuse();
+        return _refuse(Refusal.pastEnd);
       }
       final lo = _reader.readBits(32);
       if (_reader.wouldReadPastEnd(bits - 32)) {
-        return _refuse();
+        return _refuse(Refusal.pastEnd);
       }
       final hi = _reader.readBits(bits - 32);
       offset = (hi << 32) | lo;
@@ -1283,7 +1350,7 @@ final class ReadStream implements BitStream {
     // reject raw values outside [rawMin,rawMax] smuggled into the bit
     // headroom. reject, never clamp
     if (unsignedGreaterThan(offset, params.rawRange)) {
-      return _refuse();
+      return _refuse(Refusal.valueOutOfRange);
     }
     // reconstruct in the unsigned domain, then convert: wraps two's
     // complement for signed storage
@@ -1320,11 +1387,11 @@ final class ReadStream implements BitStream {
       return true;
     }
     if (_reader.wouldReadPastEnd(params.bits)) {
-      return _refuse();
+      return _refuse(Refusal.pastEnd);
     }
     final offset = _readGroups(params.bits);
     if (offset > params.rawRange) {
-      return _refuse();
+      return _refuse(Refusal.valueOutOfRange);
     }
     value.value = (params.rawMin + offset).toSigned();
     return true;
@@ -1470,22 +1537,12 @@ final class MeasureStream implements BitStream {
   /// Measures a UTF-8 string: the length field plus the aligned bytes.
   bool serializeString(Ref<String> value, int bufferSize) {
     assert(_isValidUtf16(value.value));
+    assert(!value.value.contains('\u0000'));
     final encoded = utf8.encode(value.value);
     assert(encoded.length < bufferSize);
     final length = Ref<int>(encoded.length);
     serializeInt(length, 0, bufferSize - 1);
     serializeBytes(encoded);
-    return true;
-  }
-
-  /// Measures a wide string: the length field plus 32 bits per UTF-16 code
-  /// unit. No alignment anywhere in this operation.
-  bool serializeWideString(Ref<String> value, int bufferSize) {
-    assert(_isValidUtf16(value.value));
-    assert(value.value.length < bufferSize);
-    final length = Ref<int>(value.value.length);
-    serializeInt(length, 0, bufferSize - 1);
-    _bitsWritten += 32 * value.value.length;
     return true;
   }
 
@@ -1499,6 +1556,9 @@ final class MeasureStream implements BitStream {
 
   /// Measures a nested object inline, adding no bits of its own.
   bool serializeObject(Serializable object) => object.serialize(this);
+
+  /// Measures the end of the object: nothing, it costs no bits.
+  bool serializeEnd() => true;
 
   /// Measures a relative integer: the exact ladder cost for this value.
   bool serializeIntRelative(int previous, Ref<int> current) {

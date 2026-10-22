@@ -8,19 +8,20 @@
 //
 // The battery also carries the format's edge doctrines and its own
 // self-test:
-//   - trailing bits (STANDARD.md, adopted 2026-08-15): writers emit zero in
-//     the unused bits of the final byte; readers must not reject a stream
-//     for their contents, and must decode a doctored tail identically.
+//   - trailing bits (STANDARD.md, "end", format 2.0): writers emit zero in
+//     the unused bits of the final byte. A field read never looks at them,
+//     and the message's end refuses a set one as nonzero_padding and a byte
+//     after the message as trailing_data, so one message has one encoding.
 //   - past-end memory (STANDARD.md, ruled 2026-08-15): bytes past the
 //     stream end are never interpreted. The Dart reader prices its windows
 //     inside the buffer, so the proof here is the contract's observable
 //     half: poison past the end of the data view changes nothing, on the
 //     accept path or the refusal path.
-//   - the sabotage sweep: every consumed bit of the golden stream is load
-//     bearing. Flipping any single one of the 891 consumed bits must make
-//     the decode refuse or produce different values — proving this battery
-//     CAN fail — while flipping any of the 5 trailing bits must change
-//     nothing. Hostile data never throws anywhere in the sweep.
+//   - the sabotage sweep: every bit of the golden stream is load bearing.
+//     Flipping any single one of its 848 bits must make the decode refuse or
+//     produce different values — proving this battery CAN fail — and a
+//     flipped padding bit is refused by the end. Hostile data never throws
+//     anywhere in the sweep.
 //   - the golden uint128 and int128 pins and the two compressed float
 //     conformance vectors (nonzero-min and writer-fusion) from serialize.h.
 
@@ -36,24 +37,25 @@ const int int32Max = 2147483647;
 const int int64Min = 0x8000000000000000;
 const int int64Max = 0x7FFFFFFFFFFFFFFF;
 
-// serialize.h's golden_wire_bytes, extracted mechanically from the reference
-// source: 112 bytes, pinned forever.
+// serialize.h's golden_wire_bytes, format 2.0, which STANDARD.md prints as
+// "The whole message": 106 bytes, pinned forever.
 final Uint8List goldenWireBytes = Uint8List.fromList([
   0x5D, 0xDA, 0xF7, 0xE6, 0xD5, 0x77, 0xDF, 0x56, 0xEF, 0x9F, 0x75, 0x19, //
   0x52, 0xBC, 0xDA, 0x0F, 0x49, 0x40, 0xF4, 0x55, 0x55, 0x55, 0x55, 0x55, //
   0x55, 0x55, 0xFF, 0xFC, 0xD1, 0x48, 0xE0, 0x59, 0xD1, 0x48, 0xC0, 0x7B, //
   0xF3, 0x6A, 0xE2, 0x59, 0xD1, 0x48, 0x84, 0xB7, 0x06, 0xDE, 0xAD, 0xBE, //
-  0xEF, 0xCA, 0xFE, 0x01, 0x06, 0x67, 0x6F, 0x6C, 0x64, 0x65, 0x6E, 0xE3, //
-  0x21, 0x00, 0x00, 0xC0, 0x21, 0x00, 0x00, 0x00, 0x22, 0x00, 0x00, 0x00, //
-  0xC0, 0x60, 0x00, 0x80, 0xA2, 0x7C, 0xFC, 0xEC, 0x26, 0xCB, 0xFF, 0xFF, //
-  0x4B, 0x1D, 0x1F, 0xEF, 0xD2, 0x1A, 0x1F, 0x01, 0xE9, 0xFF, 0xFF, 0x09, //
-  0x19, 0x2A, 0x3B, 0x4C, 0x5D, 0x6E, 0x7F, 0x78, 0x6F, 0x5E, 0x4D, 0x3C, //
-  0x2B, 0x1A, 0x09, 0x04,
+  0xEF, 0xCA, 0xFE, 0x01, 0x06, 0x67, 0x6F, 0x6C, 0x64, 0x65, 0x6E, 0x06, //
+  0xE7, 0xA2, 0x81, 0xE7, 0x9F, 0xB3, 0xC0, 0x60, 0x00, 0x80, 0xA2, 0x7C, //
+  0xFC, 0xEC, 0x26, 0xCB, 0xFF, 0xFF, 0x4B, 0x1D, 0x1F, 0xEF, 0xD2, 0x1A, //
+  0x1F, 0x01, 0xE9, 0xFF, 0xFF, 0x09, 0x19, 0x2A, 0x3B, 0x4C, 0x5D, 0x6E, //
+  0x7F, 0x78, 0x6F, 0x5E, 0x4D, 0x3C, 0x2B, 0x1A, 0x09, 0x04,
 ]);
 
-// The golden stream ends 3 bits into its final byte: 891 consumed bits, 5
-// trailing bits the writer must zero and the reader must ignore.
-const int goldenBits = 891;
+// The golden message's last field ends 3 bits into its final byte: 843 bits
+// of message and 5 of padding, which the writer zeroes and the reader's end
+// consumes and requires zero, so a read of the whole message consumes 848.
+const int goldenBits = 843;
+const int goldenReadBits = 848;
 
 /// GoldenWireData, field for field: the scalar fields as Ref holders, the
 /// byte array filled in place. The fixed point fields hold the RAW scaled
@@ -77,7 +79,7 @@ final class GoldenData {
   final relativeFar = Ref<int>(0);
   final bytes = Uint8List(7);
   final string = Ref<String>('');
-  final wstring = Ref<String>('');
+  final cjk = Ref<String>('');
   final fixedQ8x8 = Ref<int>(0);
   final fixedQ16x16 = Ref<int>(0);
   final fixedQ48x16 = Ref<int>(0);
@@ -109,8 +111,8 @@ final class GoldenData {
     bytes.setAll(0, const [0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0x01]);
     string.value = 'golden';
     // built from explicit code points so source encoding can never change
-    // the golden bytes: cyrillic, BMP only
-    wstring.value = String.fromCharCodes(const [0x043C, 0x0438, 0x0440]);
+    // the golden bytes: U+7881 U+77F3, go stones, six bytes of UTF-8
+    cjk.value = String.fromCharCodes(const [0x7881, 0x77F3]);
     fixedQ8x8.value = -(3 * 256 + 64); // -3.25 in Q8.8
     fixedQ16x16.value = 1234 * 65536 + 32768; // 1234.5 in Q16.16
     fixedQ48x16.value = -(54321 * 65536 + 12345); // -54321.188... in Q48.16
@@ -153,7 +155,7 @@ bool serializeGoldenWire(BitStream stream, GoldenData data) {
       stream.serializeAlign() &&
       stream.serializeBytes(data.bytes) &&
       stream.serializeString(data.string, 16) &&
-      stream.serializeWideString(data.wstring, 8) &&
+      stream.serializeString(data.cjk, 8) &&
       // the fixed point section starts byte aligned, so every byte pinned
       // above it stays put
       stream.serializeAlign() &&
@@ -178,7 +180,9 @@ bool serializeGoldenWire(BitStream stream, GoldenData data) {
         64,
         int64Min,
         int64Max,
-      );
+      ) &&
+      // the message's end: a reader of a packet reads it after the last field
+      stream.serializeEnd();
 }
 
 bool _sameDouble(double a, double b) =>
@@ -186,8 +190,8 @@ bool _sameDouble(double a, double b) =>
 
 /// True when every decoded field equals the expected values exactly —
 /// including the compressed float, which the golden values pin exactly by
-/// construction. Doubles compare as bit patterns, matching the
-/// bit-transparent float doctrine.
+/// construction. Doubles compare as bit patterns: a tolerance comparison
+/// cannot see a flipped low bit.
 bool matchesGolden(GoldenData a, GoldenData b) {
   if (a.bits4.value != b.bits4.value) return false;
   if (a.bits11.value != b.bits11.value) return false;
@@ -214,7 +218,7 @@ bool matchesGolden(GoldenData a, GoldenData b) {
     if (a.bytes[i] != b.bytes[i]) return false;
   }
   if (a.string.value != b.string.value) return false;
-  if (a.wstring.value != b.wstring.value) return false;
+  if (a.cjk.value != b.cjk.value) return false;
   if (a.fixedQ8x8.value != b.fixedQ8x8.value) return false;
   if (a.fixedQ16x16.value != b.fixedQ16x16.value) return false;
   if (a.fixedQ48x16.value != b.fixedQ48x16.value) return false;
@@ -247,14 +251,16 @@ void run() {
     final reader = ReadStream(goldenWireBytes);
     final data = GoldenData();
     expect(serializeGoldenWire(reader, data), 'the golden read refused');
-    expectEquals(reader.bitsProcessed, goldenBits, 'bits processed');
+    expectEquals(reader.bitsProcessed, goldenReadBits, 'bits processed');
+    expectEquals(reader.refusal, null, 'no refusal');
     expect(
       matchesGolden(data, GoldenData.golden()),
       'decoded values do not match the golden values',
     );
   });
 
-  test('trailing bits: writer zeroes them, reader is indifferent', () {
+  test('trailing bits: writer zeroes them, a field read ignores them, '
+      'the end refuses them', () {
     // writer obligation, small stream: a message ending 3 bits into its
     // final byte, written into a buffer pre-filled with 0xFF so the zeros
     // must come from the writer, not from the caller
@@ -285,9 +291,12 @@ void run() {
     final tail = Ref<int>(0);
     expect(reader.serializeBits(tail, 3), 'tail read');
     expectEquals(tail.value, 5, 'tail value');
+    // the end examines them: a set padding bit is a second encoding
+    expect(!reader.serializeEnd(), 'the end refuses the set padding');
+    expectEquals(reader.refusal, Refusal.nonzeroPadding, 'refusal reason');
   });
 
-  test('trailing bits: a doctored golden stream decodes identically', () {
+  test('trailing bits: a doctored golden stream is refused at its end', () {
     final bitsInFinalByte = goldenBits % 8;
     expect(bitsInFinalByte != 0, 'golden ends unaligned: can discriminate');
     final trailingMask = (0xFF << bitsInFinalByte) & 0xFF;
@@ -300,14 +309,22 @@ void run() {
     final doctored = Uint8List.fromList(goldenWireBytes);
     doctored[doctored.length - 1] |= trailingMask; // set every trailing bit
 
+    // format 1.1 accepted this stream and decoded it identically; 2.0
+    // refuses it, because the same message would have two encodings
     final reader = ReadStream(doctored);
     final data = GoldenData();
-    expect(serializeGoldenWire(reader, data), 'readers must not reject');
+    expect(!serializeGoldenWire(reader, data), 'the end must refuse');
+    expectEquals(reader.refusal, Refusal.nonzeroPadding, 'refusal reason');
+
+    // and a byte after the message, even a zero one, is trailing data
+    final longer = Uint8List(goldenWireBytes.length + 1)
+      ..setAll(0, goldenWireBytes);
+    final longerReader = ReadStream(longer);
     expect(
-      matchesGolden(data, GoldenData.golden()),
-      'and must decode identically',
+      !serializeGoldenWire(longerReader, GoldenData()),
+      'the end must refuse a byte after the message',
     );
-    expectEquals(reader.bitsProcessed, goldenBits, 'bits processed');
+    expectEquals(longerReader.refusal, Refusal.trailingData, 'refusal reason');
   });
 
   test('past-end poison: bytes past the stream end are never interpreted', () {
@@ -407,13 +424,12 @@ void run() {
     }
   });
 
-  test('the sabotage sweep: every consumed bit is load bearing', () {
+  test('the sabotage sweep: every bit is load bearing', () {
     // the battery must be able to fail: a conformance harness that accepts
-    // doctored streams proves nothing. flipping any single one of the 891
-    // consumed bits must make the read refuse or produce different values;
-    // the 5 trailing bits are the exact complement: flipping any of them
-    // must change nothing at all. and across all 896 doctored streams,
-    // hostile data never throws.
+    // doctored streams proves nothing. flipping any single one of the 843
+    // message bits must make the read refuse or produce different values,
+    // and flipping any of the 5 padding bits must make the end refuse. across
+    // all 848 doctored streams, hostile data never throws.
     final golden = GoldenData.golden();
     for (var bit = 0; bit < goldenWireBytes.length * 8; bit++) {
       final doctored = Uint8List.fromList(goldenWireBytes);
@@ -427,12 +443,12 @@ void run() {
       if (bit < goldenBits) {
         expect(
           !matches,
-          'consumed bit $bit flipped: still decoded the golden values',
+          'message bit $bit flipped: still decoded the golden values',
         );
       } else {
         expect(
-          matches && reader.bitsProcessed == goldenBits,
-          'trailing bit $bit flipped: not accepted identically',
+          !ok && reader.refusal == Refusal.nonzeroPadding,
+          'padding bit $bit flipped: not refused as nonzero_padding',
         );
       }
     }

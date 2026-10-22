@@ -12,6 +12,7 @@ import 'int128_test.dart' as int128;
 import 'measure_test.dart' as measure;
 import 'serialize_bits_test.dart' as serialize_bits;
 import 'serialize_bytes_string_test.dart' as serialize_bytes_string;
+import 'serialize_end_test.dart' as serialize_end;
 import 'serialize_fixed_test.dart' as serialize_fixed;
 import 'serialize_float_test.dart' as serialize_float;
 import 'serialize_int_relative_test.dart' as serialize_int_relative;
@@ -27,6 +28,7 @@ void main() {
   serialize_int_relative.run();
   serialize_float.run();
   serialize_bytes_string.run();
+  serialize_end.run();
   serialize_fixed.run();
   serialize_object.run();
   measure.run();

@@ -1,7 +1,8 @@
 // The relative-integer ladder: every tier boundary, the final absolute
 // tier, the ordering refusal — the absolute form carries no ordering
-// guarantee of its own — and the domain, 0 to 2^31 - 1 inclusive, which the
-// reader checks after reconstructing in every tier.
+// guarantee of its own — the domain, 0 to 2^31 - 1 inclusive, which the
+// reader checks after reconstructing in every tier, and the canonical tier:
+// the absolute form carrying a difference a bounded tier takes is refused.
 //
 // The shared corpus (conformance/int_relative.txt, run by conformance_test)
 // is the authority on the domain refusals; these are the port's own reads of
@@ -153,6 +154,54 @@ void run() {
     expect(reader.serializeIntRelative(100, read), 'the domain maximum');
     expectEquals(read.value, intRelativeMax, 'the domain maximum comes back');
     expectEquals(reader.bitsProcessed, 38, 'six flags and 32 raw bits');
+  });
+
+  /// Six zero flags, then [absolute] as 32 raw bits: the absolute tier,
+  /// built by hand whatever the difference.
+  Uint8List absoluteTier(int absolute) {
+    final writer = WriteStream(Uint8List(8));
+    writer.serializeBits(Ref<int>(0), 6);
+    writer.serializeBits(Ref<int>(absolute), 32);
+    writer.flush();
+    return writer.data();
+  }
+
+  test('serializeIntRelative: the absolute tier is canonical', () {
+    // a difference the last bounded tier takes, carried in the absolute
+    // tier, is a second encoding of the value: refused as non_canonical.
+    // Format 1.1 accepted all of these
+    for (final difference in const [1, 2, 6, 7, 4378, 69913, 69914]) {
+      final reader = ReadStream(absoluteTier(100 + difference));
+      final read = Ref<int>(-1);
+      expect(
+        !reader.serializeIntRelative(100, read),
+        'difference $difference refused',
+      );
+      expectEquals(reader.refusal, Refusal.nonCanonical, 'refusal reason');
+      expectEquals(read.value, -1, 'holder untouched');
+    }
+    // the first difference past the last tier is the absolute tier's own
+    final reader = ReadStream(absoluteTier(100 + 69915));
+    final read = Ref<int>(0);
+    expect(reader.serializeIntRelative(100, read), 'difference 69915');
+    expectEquals(read.value, 100 + 69915, 'comes back');
+  });
+
+  test('serializeIntRelative: the domain comes before the canonical tier', () {
+    // a current past the domain is value_out_of_range whatever its
+    // difference: previous at the top of the domain, current one above it,
+    // a difference of one, which a reader testing the difference first, or
+    // subtracting in 32 bits, would call non_canonical
+    final reader = ReadStream(absoluteTier(0x80000000));
+    expect(
+      !reader.serializeIntRelative(intRelativeMax, Ref<int>(0)),
+      'refused',
+    );
+    expectEquals(reader.refusal, Refusal.valueOutOfRange, 'refusal reason');
+    // and a current not above previous is value_out_of_range too
+    final equal = ReadStream(absoluteTier(100));
+    expect(!equal.serializeIntRelative(100, Ref<int>(0)), 'equal refused');
+    expectEquals(equal.refusal, Refusal.valueOutOfRange, 'refusal reason');
   });
 
   test('serializeIntRelative: previous outside the domain is caller error', () {

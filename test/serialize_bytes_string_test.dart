@@ -1,8 +1,8 @@
-// serialize_bytes (aligns first, zero count still aligns), the UTF-8 string
-// and the wide string: accept paths, buffer-size dependence, and every
-// refusal rule — interior NUL, invalid UTF-8, unpaired surrogates, groups
-// above 0xFFFF, nonzero align padding, truncation. Hostile bytes never
-// throw.
+// serialize_bytes (aligns first, zero count still aligns) and the UTF-8
+// string: accept paths, real text in every script round tripped byte for
+// byte, buffer-size dependence, and every refusal rule with its reason —
+// embedded NUL, invalid UTF-8, nonzero align padding, truncation — and the
+// order where two of them meet. Hostile bytes never throw.
 
 import 'dart:typed_data';
 
@@ -97,6 +97,7 @@ void run() {
     final reader = ReadStream(doctored);
     final read = Ref<String>('unset');
     expect(!reader.serializeString(read, 16), 'interior NUL refused');
+    expectEquals(reader.refusal, Refusal.embeddedNul, 'refusal reason');
     expectEquals(read.value, 'unset', 'holder untouched on refusal');
   });
 
@@ -122,6 +123,7 @@ void run() {
       final reader = ReadStream(doctored);
       final read = Ref<String>('unset');
       expect(!reader.serializeString(read, 16), 'invalid UTF-8 refused');
+      expectEquals(reader.refusal, Refusal.invalidUtf8, 'refusal reason');
     }
   });
 
@@ -136,86 +138,92 @@ void run() {
     expect(!reader.serializeString(read, 16), 'overrun length refused');
   });
 
-  test('serializeWideString: round trips, BMP and astral', () {
-    for (final value in ['мир', '', 'wide', 'astral \u{1F680}\u{10348}']) {
-      final writer = WriteStream(Uint8List(128));
-      expect(
-        writer.serializeWideString(Ref<String>(value), 16),
-        'write "$value"',
-      );
+  test('serializeString: the refusal reasons, and their order', () {
+    Refusal? refusalOf(List<int> bytes, int bufferSize) {
+      final reader = ReadStream(Uint8List.fromList(bytes));
+      final read = Ref<String>('unset');
+      expect(!reader.serializeString(read, bufferSize), 'refused');
+      expectEquals(read.value, 'unset', 'holder untouched on refusal');
+      return reader.refusal;
+    }
+
+    // buffer size 4: a 2-bit length, then the aligned payload
+    expectEquals(refusalOf(const [0x01, 0x00], 4), Refusal.embeddedNul, 'NUL');
+    expectEquals(
+      refusalOf(const [0x01, 0xFF], 4),
+      Refusal.invalidUtf8,
+      'a byte that never appears in UTF-8',
+    );
+    // both rules at once: the NUL scan runs over the whole payload BEFORE
+    // the encoding is checked, so 02 FF 00 is embedded_nul
+    expectEquals(
+      refusalOf(const [0x02, 0xFF, 0x00], 4),
+      Refusal.embeddedNul,
+      'NUL wins over invalid UTF-8',
+    );
+    // set padding before a truncated payload: the align comes first
+    expectEquals(
+      refusalOf(const [0x0B], 8), // length 3, padding bit 3 set
+      Refusal.nonzeroPadding,
+      'padding wins over the truncated payload',
+    );
+    expectEquals(refusalOf(const [0x03], 8), Refusal.pastEnd, 'truncated');
+    // buffer size 4 allows lengths 0..3, so a length field of 3 at buffer
+    // size 3 (2 bits, 0..2 allowed) is out of range
+    expectEquals(
+      refusalOf(const [0x03, 0x61, 0x62, 0x63], 3),
+      Refusal.valueOutOfRange,
+      'length past the buffer',
+    );
+  });
+
+  test('serializeString: real text round trips byte for byte', () {
+    for (final value in [
+      '\u56F4\u68CB', // weiqi
+      '\uBC14\uB451', // baduk
+      '\u0634\u0637\u0631\u0646\u062C', // right to left
+      'e\u0301', // combining acute: never normalized to U+00E9
+      '\u00E9',
+      '\uFEFFgo', // a leading byte order mark is kept
+      'go\uFEFF',
+      '\uFEFF\uFEFF',
+      '\uFFFF', // a noncharacter travels
+      '\u{1F680}', // four bytes
+      '\u{20000}', // CJK Extension B
+      '\u{10FFFF}',
+    ]) {
+      final writer = WriteStream(Uint8List(64));
+      expect(writer.serializeString(Ref<String>(value), 32), 'write');
       writer.flush();
       final reader = ReadStream(writer.data());
       final read = Ref<String>('unset');
-      expect(reader.serializeWideString(read, 16), 'read "$value"');
-      expectEquals(read.value, value, 'round trip "$value"');
+      expect(reader.serializeString(read, 32), 'read');
+      expect(reader.serializeEnd(), 'exactly consumed');
+      expectEquals(
+        read.value.codeUnits.join(' '),
+        value.codeUnits.join(' '),
+        'code units of ${value.codeUnits}',
+      );
     }
   });
 
-  test('serializeWideString: no alignment anywhere in the operation', () {
-    // 3 code units against bufferSize 8: 3 length bits + 3 x 32, never
-    // padded — the worked example structure of STANDARD.md
-    final writer = WriteStream(Uint8List(32));
-    writer.serializeWideString(Ref<String>('мир'), 8);
-    expectEquals(writer.bitsProcessed, 3 + 3 * 32, 'unaligned bit cost');
-  });
-
-  test('serializeWideString: refusals — group above 0xFFFF, interior NUL, '
-      'unpaired surrogates, truncation', () {
-    Uint8List writeGroups(int length, List<int> groups) {
-      final writer = WriteStream(Uint8List(64));
-      writer.serializeBits(Ref<int>(length), 3); // length for bufferSize 8
-      for (final group in groups) {
-        writer.serializeBits(Ref<int>(group), 32);
-      }
-      writer.flush();
-      return writer.data();
+  test('serializeString: a lone surrogate or a NUL is caller error', () {
+    if (!assertsEnabled) {
+      return; // a release build performs no write-side validation
     }
-
-    final read = Ref<String>('unset');
-    // a group above 0xFFFF is not a UTF-16 code unit
-    expect(
-      !ReadStream(writeGroups(1, const [0x10000])).serializeWideString(read, 8),
-      'group above 0xFFFF refused',
-    );
-    // an interior NUL group
-    expect(
-      !ReadStream(
-        writeGroups(2, const [0x61, 0x00]),
-      ).serializeWideString(read, 8),
-      'interior NUL refused',
-    );
-    // a high surrogate without its low
-    expect(
-      !ReadStream(
-        writeGroups(2, const [0xD800, 0x61]),
-      ).serializeWideString(read, 8),
-      'high surrogate without low refused',
-    );
-    // a low surrogate with no high before it
-    expect(
-      !ReadStream(writeGroups(1, const [0xDC00])).serializeWideString(read, 8),
-      'stray low surrogate refused',
-    );
-    // a dangling high surrogate as the final group
-    expect(
-      !ReadStream(writeGroups(1, const [0xD800])).serializeWideString(read, 8),
-      'dangling high surrogate refused',
-    );
-    // a well-formed pair passes
-    expect(
-      ReadStream(
-        writeGroups(2, const [0xD83D, 0xDE80]),
-      ).serializeWideString(read, 8),
-      'well-formed pair accepted',
-    );
-    expectEquals(read.value, '\u{1F680}', 'pair recombines to the character');
-    // truncation: length claims more groups than the data holds
-    expect(
-      !ReadStream(
-        writeGroups(7, const [0x61]),
-      ).serializeWideString(Ref<String>('unset'), 8),
-      'truncation refused',
-    );
+    // utf8.encode would silently replace a lone surrogate with U+FFFD, so
+    // the writer must assert rather than emit text the caller never had
+    for (final value in ['\uD800', 'a\uDC00', 'a\uD83Db', 'a\u0000b']) {
+      expectThrows(
+        () =>
+            WriteStream(Uint8List(32)).serializeString(Ref<String>(value), 16),
+        'write ${value.codeUnits}',
+      );
+      expectThrows(
+        () => MeasureStream().serializeString(Ref<String>(value), 16),
+        'measure ${value.codeUnits}',
+      );
+    }
   });
 
   test('serializeAlign: a nonzero pad fails the read', () {
@@ -229,6 +237,7 @@ void run() {
     final reader = ReadStream(doctored);
     reader.serializeBits(Ref<int>(0), 3);
     expect(!reader.serializeAlign(), 'nonzero padding refused');
+    expectEquals(reader.refusal, Refusal.nonzeroPadding, 'refusal reason');
     // and the clean stream is accepted
     final clean = ReadStream(writer.data());
     clean.serializeBits(Ref<int>(0), 3);

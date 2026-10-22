@@ -376,6 +376,18 @@ Future<bool> _runUnknownOperation(Directory root) async {
     );
     return false;
   }
+  // red for the right reason: a compile error or a missing file is red too,
+  // and proves nothing about skipping
+  if (!(result.stdout as String).contains(
+    'control-a-runner-must-fail-on-an-operation-it-cannot-drive: no runner '
+    "for parameter 'whatever' on operation 'no_such_operation'",
+  )) {
+    print(
+      'FAIL unknown-operation: the runner went red, but not by refusing the '
+      'operation it has no runner for:\n${result.stdout}${result.stderr}',
+    );
+    return false;
+  }
   print('ok   unknown-operation: the runner went red');
   return true;
 }

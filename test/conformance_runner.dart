@@ -1055,7 +1055,14 @@ int runVectorFile(String path, String text) {
       return;
     }
     vectors++;
-    _runVector(vector);
+    // a throw is a failure of this vector, never of the file: STANDARD.md
+    // calls a trap on hostile input non-conforming, and the vectors after it
+    // still run, so a negative control sees exactly which vectors failed
+    try {
+      _runVector(vector);
+    } catch (error) {
+      _fail(vector, 'threw $error');
+    }
     vector = _Vector(path);
   }
 

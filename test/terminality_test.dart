@@ -151,6 +151,8 @@ void run() {
     expect(!stream.serializeObject(_Refuser()), 'refused');
     expectEquals(stream.refusal, null, 'no wire reason');
     _expectLatched(stream, 'caller refusal');
+    // and the echoes after it name no rule either
+    expectEquals(stream.refusal, null, 'still no wire reason');
   });
 }
 

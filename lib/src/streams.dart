@@ -837,7 +837,12 @@ final class ReadStream implements BitStream {
   /// degenerate range consumes nothing and so has no past-end check of its
   /// own — ask [BitReader.wouldReadPastEnd] for zero bits to see the latch.
   bool _refuse(Refusal reason) {
-    _refusal ??= reason;
+    // only a refusal on a stream that has not failed names a rule: on a
+    // failed stream every refusal is an echo, including one after a caller's
+    // own serialize refused with no wire rule, whose reason stays null
+    if (!failed) {
+      _refusal = reason;
+    }
     _reader.poison();
     return false;
   }
@@ -1151,10 +1156,19 @@ final class ReadStream implements BitStream {
     if (!serializeInt(length, 0, bufferSize - 1)) {
       return false; // refused by the length field, which named the reason
     }
-    final bytes = Uint8List(length.value);
-    if (!serializeBytes(bytes)) {
-      return false; // refused by the bytes, which named the reason
+    // the payload is serialize_bytes: the align first, so set padding is
+    // nonzero_padding even when the payload would also run past the end,
+    // then the claimed length against the bytes that remain, refused as
+    // past_end BEFORE anything is allocated: a tiny stream claiming a huge
+    // length must cost nothing
+    if (!serializeAlign()) {
+      return false; // refused by the align, which named the reason
     }
+    if (length.value > _reader.bitsRemaining ~/ 8) {
+      return _refuse(Refusal.pastEnd);
+    }
+    final bytes = Uint8List(length.value);
+    _reader.readBytes(bytes);
     // interior NUL first: NUL is valid UTF-8, so the validator below cannot
     // catch it, and a conforming writer is never handed one, so a zero byte
     // only arrives doctored

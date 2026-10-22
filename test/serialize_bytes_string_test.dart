@@ -177,6 +177,20 @@ void run() {
     );
   });
 
+  test('serializeString: a huge claimed length is refused before any '
+      'allocation', () {
+    // buffer size 2^31: a 31-bit length field claiming 2^31 - 1 bytes, on a
+    // stream holding four bytes. Allocating the claimed length first would
+    // ask for 2 GiB; the claim must be refused against the bytes that remain
+    final reader = ReadStream(
+      Uint8List.fromList(const [0xFF, 0xFF, 0xFF, 0x7F]),
+    );
+    final read = Ref<String>('unset');
+    expect(!reader.serializeString(read, 1 << 31), 'refused');
+    expectEquals(reader.refusal, Refusal.pastEnd, 'refusal reason');
+    expectEquals(read.value, 'unset', 'holder untouched');
+  });
+
   test('serializeString: real text round trips byte for byte', () {
     for (final value in [
       '\u56F4\u68CB', // weiqi

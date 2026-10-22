@@ -17,8 +17,14 @@ stream written by one reads in any other.
 [STANDARD.md](STANDARD.md) is the authority on every byte. The copy here
 is vendored verbatim from
 [mas-bandwidth/serialize](https://github.com/mas-bandwidth/serialize), along
-with the shared conformance corpus in [conformance/](conformance); CI fails
-if either drifts from upstream.
+with the shared conformance corpus in [conformance/](conformance) and its
+negative controls in [conformance-controls/](conformance-controls); CI fails
+if any of them drifts from upstream.
+
+**Format version 2.0.** The wire carries only integers and bytes, and every
+value has exactly one encoding: floats are finite, a packet ends at its
+`end`, and every refusal names its rule. Every finite value 1.1 carried keeps
+its exact bytes; `wstring` is gone. Release 2.0.0 is the first to carry it.
 
 If this library helps you, **[please support it](https://www.patreon.com/MasBandwidth/membership)**
 
@@ -36,7 +42,7 @@ dependencies:
   serialize:
     git:
       url: https://github.com/mas-bandwidth/serialize.dart.git
-      ref: v1.1.2
+      ref: v2.0.0
 ```
 
 ```dart
@@ -65,18 +71,27 @@ parameters). [USAGE.md](USAGE.md) teaches every operation by example.
   exact, zero bits for a degenerate `min == max` range on every width.
 - **Unsigned helpers and bool**: `serializeUint8` / `16` / `32` / `64`,
   `serializeUint128` (the `UInt128` pair type), `serializeBool`.
-- **Floats**: `serializeFloat` and `serializeDouble`, bit transparent both
-  ways — every pattern legal, NaN payloads ride a software
-  narrowing/widening that never sets the quiet bit;
+- **Floats**: `serializeFloat` and `serializeDouble`, finite values only,
+  every one bit exact — negative zero and the subnormals included; NaN and
+  the infinities are refused on read, tested on the raw bits;
   `serializeCompressedFloat`, quantizing in float32 with the standard's
-  two roundings on each side.
+  two roundings on each side, and refusing a decode that is not finite.
 - **Bytes and strings**: `serializeBytes` (aligned bulk copy, count
   agreed, not transmitted); `serializeString` (UTF-8 on the wire, payload
-  validated on read in every mode); `serializeWideString` (one 32-bit
-  group per UTF-16 code unit, no alignment anywhere).
+  validated on read in every mode, real text in every script round
+  tripped byte for byte: no normalization, no stripped byte order mark).
+- **The end**: `serializeEnd`, read after the last field of a packet's
+  top-level object: a whole byte left over is refused, and so is a set bit
+  in the final byte's padding. Writing or measuring it costs nothing.
+- **Refusal reasons**: `ReadStream.refusal` names the rule behind the first
+  refusal, a `Refusal` from the standard's closed list, spelled by
+  `Refusal.name` exactly as the standard spells it (`past_end`,
+  `value_out_of_range`, `nonzero_padding`, `trailing_data`,
+  `non_finite_float`, `invalid_utf8`, `embedded_nul`, `non_canonical`).
 - **The relative integer**: `serializeIntRelative` — the flag ladder for
   strictly increasing sequences, one bit for a difference of 1. The domain
-  is 0 to 2^31 - 1 inclusive, checked on read in every tier.
+  is 0 to 2^31 - 1 inclusive, checked on read in every tier, and the
+  absolute tier refuses a difference a bounded tier carries.
 - **Fixed point**: `serializeFixed` at 8/16/32/64-bit storage and
   `serializeFixed128` at 128-bit storage — Q formats, the raw scaled
   integer as an exact ranged offset, byte identical to `serializeInt64`
@@ -93,7 +108,11 @@ parameters). [USAGE.md](USAGE.md) teaches every operation by example.
   **inside** the buffer — any data length is supported, no slack past the
   data required.
 
-Pure Dart, zero dependencies.
+Pure Dart, zero dependencies. It runs on the Dart VM, in AOT builds, and on
+the web through dart2wasm, where Dart's `int` is still a 64-bit integer: CI
+runs the whole corpus there too. dart2js, whose `int` is a JavaScript
+double, refuses to compile the library, so no 64-bit value is ever rounded
+through a double.
 
 ## Quick example
 
@@ -107,7 +126,8 @@ class Player {
 bool serializePlayer(BitStream stream, Player player) {
   return stream.serializeInt(player.health, 0, 100) &&
       stream.serializeBool(player.alive) &&
-      stream.serializeFloat(player.heading);
+      stream.serializeFloat(player.heading) &&
+      stream.serializeEnd(); // the packet ends here: nothing may follow
 }
 
 final writer = WriteStream(Uint8List(64)); // length a multiple of 8
@@ -117,6 +137,7 @@ final wire = writer.data();                // 5 bytes: 7 + 1 + 32 bits
 
 final reader = ReadStream(wire);           // any length, no slack required
 serializePlayer(reader, decoded);          // -> true
+reader.refusal;                            // null: nothing was refused
 ```
 
 ## Toolchain
@@ -141,12 +162,26 @@ directory rather than naming its files, and a vector whose operation it
 cannot drive fails rather than being skipped. An accepted vector must
 yield the stated value and consume the stated bits; a vector marked
 `writer = canonical` must re-emit the whole stream byte for byte, flush
-included; a sequence stating `measure_at_least` must measure at least
-that; and a refused vector must refuse, leave the caller's scalar
-destination untouched, and leave the stream terminal, which is checked by
-issuing a further read and requiring it to fail, consume no bits and
-write nothing. Nothing in it is regenerated here, so it can convict this
-port rather than agree with it.
+included; a vector carrying `writer_input` must emit its bytes when the
+writer is handed that input; a sequence stating `measure_at_least` must
+measure at least that; and a refused vector must refuse for the reason it
+states, leave the caller's scalar destination untouched, and leave the
+stream terminal, which is checked by issuing a further read and requiring
+it to fail, consume no bits and write nothing. Nothing in it is
+regenerated here, so it can convict this port rather than agree with it.
+
+The instrument is proven to respond. `tool/conformance_controls.dart`
+builds a scratch copy of this library with one refusal rule deleted, once
+per rule the standard names, runs the real corpus through it, and requires
+the vectors that fail to be exactly the ones its
+`conformance-controls/<rule>.expected` lists; and
+it points the runner at a vector whose operation does not exist, which must
+go red. `tool/web_conformance.dart` runs the same corpus on the web target.
+
+```
+dist/dart-sdk-3.13.2/bin/dart run tool/conformance_controls.dart
+dist/dart-sdk-3.13.2/bin/dart run tool/web_conformance.dart   # needs Node
+```
 
 [`interop/`](interop) takes it further: the CI `interop` job builds the C++
 reference at a pinned release and runs it head to head with this port. Both
@@ -159,8 +194,8 @@ every push, so wire compatibility is measured rather than asserted.
 
 Beside it the suite pins the family's golden vectors byte for byte — the
 golden wire message covering every operation class, the discriminating
-compressed-float vectors (bit patterns, not tolerances), the string and
-wide-string pins, every relative-integer tier, and the fixed point
+compressed-float vectors (bit patterns, not tolerances), the string
+pins, every relative-integer tier, and the fixed point
 shapes at every group count — plus per-primitive unit suites, refusal
 proofs for hostile input, terminal-failure proofs, and the measure bound.
 Run it in both assert modes: writer contracts live in asserts, so the two

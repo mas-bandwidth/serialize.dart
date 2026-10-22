@@ -1,7 +1,10 @@
-// float and double bit transparency — every pattern legal, NaN payloads
-// byte-exact, compared as bit patterns, never values — and the compressed
-// float: the discriminating quantization rows of STANDARD.md, refusals for
-// smuggled integers and truncation.
+// float and double carry finite values only, every one bit exact (format
+// 2.0): finite patterns round trip compared as bit patterns, never values;
+// NaN with any payload and both infinities are refused on read as
+// non_finite_float, tested on the raw bits, and are caller error on write.
+// And the compressed float: the discriminating quantization rows of
+// STANDARD.md, refusals for smuggled integers, truncation and a decode that
+// rounds to infinity.
 
 import 'dart:typed_data';
 
@@ -9,17 +12,23 @@ import 'package:serialize/serialize.dart';
 
 import 'harness.dart';
 
+/// The little-endian bytes of a [bits] wide pattern.
+Uint8List _wire(int pattern, int bits) => Uint8List.fromList([
+  for (var i = 0; i < bits ~/ 8; i++) (pattern >>> (8 * i)) & 0xFF,
+]);
+
 void run() {
-  test('serializeFloat: values round trip bit-exactly', () {
+  test('serializeFloat: finite values round trip bit-exactly', () {
     for (final value in [
       0.0,
       -0.0,
       1.0,
       fround(3.1415926),
       fround(-1e30),
-      double.infinity,
-      double.negativeInfinity,
-      fround(1.401298464324817e-45), // the smallest denormal
+      doubleFromFloat32Bits(0x7F7FFFFF), // the largest finite
+      doubleFromFloat32Bits(0xFF7FFFFF), // the most negative finite
+      doubleFromFloat32Bits(0x00000001), // the smallest denormal
+      doubleFromFloat32Bits(0x807FFFFF), // the largest negative denormal
     ]) {
       final writer = WriteStream(Uint8List(8));
       writer.serializeFloat(Ref<double>(value));
@@ -32,48 +41,39 @@ void run() {
     }
   });
 
-  test(
-    'serializeFloat: NaN payloads ride byte-for-byte, quiet or signaling',
-    () {
-      // quiet NaN, quiet NaN with payload, signaling NaN (quiet bit clear,
-      // nonzero payload), negative signaling NaN
-      for (final bits in const [
-        0x7FC00000,
-        0x7FC12345,
-        0x7F812345,
-        0xFF800001,
-      ]) {
-        final writer = WriteStream(Uint8List(8));
-        writer.serializeFloat(Ref<double>(doubleFromFloat32Bits(bits)));
-        writer.flush();
-        final wire = writer.data();
-        expectEquals(
-          wire[0] | (wire[1] << 8) | (wire[2] << 16) | (wire[3] << 24),
-          bits,
-          'wire bits for NaN ${bits.toRadixString(16)}',
-        );
-        final reader = ReadStream(wire);
-        final read = Ref<double>(0);
-        expect(reader.serializeFloat(read), 'reader must not reject NaN');
-        expectEquals(
-          float32BitsFromDouble(read.value),
-          bits,
-          'reproduced pattern ${bits.toRadixString(16)}',
-        );
-      }
-    },
-  );
+  test('serializeFloat: non-finite patterns are refused, holder untouched', () {
+    // both infinities, quiet NaN, quiet NaN with payload, signaling NaN
+    // (quiet bit clear), negative signaling NaN, every payload bit: the
+    // patterns format 1.1 carried, which 2.0 refuses on the raw bits
+    for (final bits in const [
+      0x7F800000,
+      0xFF800000,
+      0x7FC00000,
+      0x7FC12345,
+      0x7F812345,
+      0xFF800001,
+      0xFFFFFFFF,
+    ]) {
+      final reader = ReadStream(_wire(bits, 32));
+      final read = Ref<double>(-2.5);
+      expect(!reader.serializeFloat(read), '${bits.toRadixString(16)} refused');
+      expectEquals(reader.refusal, Refusal.nonFiniteFloat, 'refusal reason');
+      expectSameDouble(read.value, -2.5, 'holder untouched on refusal');
+      expect(reader.failed, 'the refusal is terminal');
+    }
+    // the edge: the exponent one below all ones is the largest finite
+    final edge = ReadStream(_wire(0x7F7FFFFF, 32));
+    expect(edge.serializeFloat(Ref<double>(0)), 'largest finite accepted');
+  });
 
-  test('serializeDouble: values and NaN payloads round trip bit-exactly', () {
+  test('serializeDouble: finite values round trip bit-exactly', () {
     for (final value in [
       0.0,
       -0.0,
       1.0 / 3.0,
-      double.infinity,
-      double.negativeInfinity,
-      doubleFromFloat64Bits(0x7FF0000000000001), // signaling NaN
-      doubleFromFloat64Bits(0xFFF8123456789ABC), // quiet NaN with payload
-      doubleFromFloat64Bits(0x0000000000000001), // smallest denormal
+      doubleFromFloat64Bits(0x7FEFFFFFFFFFFFFF), // the largest finite
+      doubleFromFloat64Bits(0x0000000000000001), // the smallest denormal
+      doubleFromFloat64Bits(0x800FFFFFFFFFFFFF), // a negative denormal
     ]) {
       final writer = WriteStream(Uint8List(8));
       writer.serializeDouble(Ref<double>(value));
@@ -84,6 +84,65 @@ void run() {
       expect(reader.serializeDouble(read), 'read');
       expectSameDouble(read.value, value, 'bit-exact round trip');
     }
+  });
+
+  test(
+    'serializeDouble: non-finite patterns are refused, holder untouched',
+    () {
+      for (final bits in const [
+        0x7FF0000000000000, // +inf
+        0xFFF0000000000000, // -inf
+        0x7FF0000000000001, // signaling NaN, payload in the low group only
+        0xFFF8123456789ABC, // quiet NaN with payload
+        0xFFFFFFFFFFFFFFFF, // every bit
+      ]) {
+        final reader = ReadStream(_wire(bits, 64));
+        final read = Ref<double>(-2.5);
+        expect(!reader.serializeDouble(read), 'refused');
+        expectEquals(reader.refusal, Refusal.nonFiniteFloat, 'refusal reason');
+        expectSameDouble(read.value, -2.5, 'holder untouched on refusal');
+      }
+    },
+  );
+
+  test('float and double: a non-finite write is caller error', () {
+    if (!assertsEnabled) {
+      return; // a release build performs no write-side validation
+    }
+    for (final value in [
+      double.nan,
+      double.infinity,
+      double.negativeInfinity,
+    ]) {
+      expectThrows(
+        () => WriteStream(Uint8List(8)).serializeFloat(Ref<double>(value)),
+        'float write of $value',
+      );
+      expectThrows(
+        () => WriteStream(Uint8List(8)).serializeDouble(Ref<double>(value)),
+        'double write of $value',
+      );
+    }
+    // the check runs AFTER the narrowing: a finite double above the float32
+    // range narrows to an infinity, which the wire does not carry
+    expectThrows(
+      () => WriteStream(Uint8List(8)).serializeFloat(Ref<double>(1e39)),
+      'float write of a double that narrows to infinity',
+    );
+    // and the largest finite float32 does not fire it
+    WriteStream(
+      Uint8List(8),
+    ).serializeFloat(Ref<double>(doubleFromFloat32Bits(0x7F7FFFFF)));
+  });
+
+  test('the finite bit tests look at the exponent field only', () {
+    expect(float32BitsAreFinite(0x7F7FFFFF), 'largest finite float');
+    expect(float32BitsAreFinite(0x80000000), 'negative zero');
+    expect(!float32BitsAreFinite(0x7F800000), '+inf');
+    expect(!float32BitsAreFinite(0xFFC00001), 'negative NaN');
+    expect(float64BitsAreFinite(0x7FEFFFFFFFFFFFFF), 'largest finite double');
+    expect(!float64BitsAreFinite(0x7FF0000000000000), '+inf');
+    expect(!float64BitsAreFinite(0xFFF0000000000001), 'negative NaN');
   });
 
   test('compressed float: the discriminating rows of STANDARD.md', () {
@@ -128,6 +187,7 @@ void run() {
       !reader.serializeCompressedFloat(read, 0.0, 10.0, 0.01),
       'smuggled integer refused',
     );
+    expectEquals(reader.refusal, Refusal.valueOutOfRange, 'refusal reason');
     expectSameDouble(read.value, -1.0, 'holder untouched on refusal');
   });
 
@@ -149,6 +209,64 @@ void run() {
     final read = Ref<double>(0);
     expect(reader.serializeCompressedFloat(read, 0.0, 10.0, 0.01), 'read');
     expectSameDouble(read.value, 5.0, 'exact quantum decode');
+  });
+
+  // over [3 * 2^103, FLT_MAX] at resolution 2^104 every operand is finite,
+  // delta rounds up to 2^128 - 2^105, and the top integer decodes to 2^128:
+  // +inf. STANDARD.md's witness for "the decode must be finite"
+  const witnessMin = 30423614405477505635920876929024.0;
+  const witnessMax = 340282346638528859811704183484516925440.0;
+  const witnessRes = 20282409603651670423947251286016.0;
+
+  test('compressed float: a decode that rounds to infinity is refused', () {
+    // the top integer, 2^24 - 2, in 24 bits
+    final reader = ReadStream(Uint8List.fromList(const [0xFE, 0xFF, 0xFF]));
+    final read = Ref<double>(-1.0);
+    expect(
+      !reader.serializeCompressedFloat(
+        read,
+        witnessMin,
+        witnessMax,
+        witnessRes,
+      ),
+      'the infinite decode refused',
+    );
+    expectEquals(reader.refusal, Refusal.nonFiniteFloat, 'refusal reason');
+    expectSameDouble(read.value, -1.0, 'holder untouched on refusal');
+
+    // one integer below the top decodes finite and is accepted: the refusal
+    // is the decode's, never the declaration's
+    final below = ReadStream(Uint8List.fromList(const [0xFD, 0xFF, 0xFF]));
+    expect(
+      below.serializeCompressedFloat(read, witnessMin, witnessMax, witnessRes),
+      'the finite decode below the top accepted',
+    );
+    expectEquals(float32BitsFromDouble(read.value), 0x7F7FFFFE, 'its bits');
+  });
+
+  test('compressed float: a declaration whose top decodes to infinity is '
+      'caller error on write, even for a finite value', () {
+    if (!assertsEnabled) {
+      return;
+    }
+    expectThrows(
+      () => WriteStream(Uint8List(8)).serializeCompressedFloat(
+        Ref<double>(witnessMin),
+        witnessMin,
+        witnessMax,
+        witnessRes,
+      ),
+      'write over the non-conforming declaration',
+    );
+    // a measure shares the declaration arithmetic, but the assert is the
+    // writer's alone: a reader refuses the decode itself, and the read above
+    // ran with asserts on too
+    MeasureStream().serializeCompressedFloat(
+      Ref<double>(witnessMin),
+      witnessMin,
+      witnessMax,
+      witnessRes,
+    );
   });
 
   test('float truncation refusals', () {

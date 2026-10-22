@@ -12,10 +12,26 @@ jobs:
         with:
           sdk: 3.13.2
       - run: dart pub get
-      - run: dart analyze
+      - run: dart analyze --fatal-infos --fatal-warnings
       - run: dart format --output=none --set-exit-if-changed .
       - run: dart run test/all.dart
       - run: dart --enable-asserts run test/all.dart
+
+      # The negative controls: a reader with one refusal rule deleted must
+      # fail exactly the vectors conformance-controls/<rule>.expected names,
+      # once per rule, and a vector whose operation has no runner must go red.
+      # A gate nobody has seen go red is a claim, not a measurement.
+      - name: Every conformance control fails exactly its expected vectors
+        run: dart run tool/conformance_controls.dart
+
+      # The web target: the corpus under dart2wasm, where Dart's int stays a
+      # 64-bit integer, and dart2js refusing to build the library, since its
+      # int is a JavaScript double that would round wide values.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26.7.0
+      - name: The corpus passes on the web target
+        run: dart run tool/web_conformance.dart
 
   spec-sync:
     name: STANDARD.md and conformance/ match upstream
@@ -68,6 +84,24 @@ jobs:
           fi
           echo "conformance/ matches upstream"
 
+          # the negative controls' oracles: each .expected list names the
+          # vectors a reader with that one rule deleted must fail
+          mkdir -p /tmp/upstream-conformance-controls
+          curl -fsSL -H 'Accept: application/vnd.github+json' \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            https://api.github.com/repos/mas-bandwidth/serialize/contents/conformance-controls?ref=main \
+            | jq -r '.[] | select(.type == "file") | .name' > /tmp/upstream-control-names
+          test -s /tmp/upstream-control-names
+          while read -r name; do
+            curl -fsSL -o "/tmp/upstream-conformance-controls/$name" \
+              "https://raw.githubusercontent.com/mas-bandwidth/serialize/main/conformance-controls/$name"
+          done < /tmp/upstream-control-names
+          if ! diff -ru /tmp/upstream-conformance-controls conformance-controls; then
+            echo "::error::conformance-controls/ has diverged from mas-bandwidth/serialize"
+            exit 1
+          fi
+          echo "conformance-controls/ matches upstream"
+
   # The port exists to be wire compatible; everything else is detail. This job is
   # the only place that claim is MEASURED against the reference itself: the exact
   # release candidate in this repository exchanges bytes with the exact C++
@@ -101,7 +135,7 @@ jobs:
     name: interop with the C++ reference
     runs-on: ubuntu-24.04
     env:
-      SERIALIZE_TAG: v1.16.2
+      SERIALIZE_TAG: v2.0.0
     steps:
       - uses: actions/checkout@v4
       - uses: dart-lang/setup-dart@v1
@@ -118,7 +152,10 @@ jobs:
       # no code for. STANDARD.md requires that to be red rather than skipped, so
       # it is checked here rather than assumed.
       - name: The vendored corpus is the pinned release's corpus
-        run: diff -ru /tmp/cpp-serialize/conformance conformance
+        run: |
+          diff -u /tmp/cpp-serialize/STANDARD.md STANDARD.md
+          diff -ru /tmp/cpp-serialize/conformance conformance
+          diff -ru /tmp/cpp-serialize/conformance-controls conformance-controls
 
       # Asserts stay ON (no -DNDEBUG): they are the C++ half of "API misuse
       # panics", and the degenerate ranges the message carries must pass with the
@@ -136,6 +173,8 @@ jobs:
           dart run interop/interop.dart write /tmp/dart.bin
           cmp /tmp/cpp.bin /tmp/dart.bin
 
+      # and each requires the other's bytes with one byte appended to be
+      # refused at the message's end, as trailing_data
       - name: Each half decodes the other's bytes and re-encodes them exactly
         run: |
           dart run interop/interop.dart read /tmp/cpp.bin

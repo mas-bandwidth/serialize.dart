@@ -6,6 +6,7 @@
 
 import 'dart:io';
 
+import 'conformance_dirs.dart';
 import 'conformance_runner.dart';
 import 'harness.dart';
 
@@ -79,9 +80,11 @@ Set<String> _expectedNames(String path) => {
 ///
 ///     dart run test/conformance_test.dart [--expect-failures <list>] [path ...]
 ///
-/// With no path it runs conformance/. With `--expect-failures`, the run is a
-/// NEGATIVE CONTROL: it passes only when the vectors that fail are exactly the
-/// ones the list names, and nothing else fails.
+/// With no path it runs conformance/, or the directory
+/// `SERIALIZE_CONFORMANCE_DIR` names (conformance_dirs.dart), which is how the
+/// nightly functional test runs the upstream corpus. With `--expect-failures`,
+/// the run is a NEGATIVE CONTROL: it passes only when the vectors that fail
+/// are exactly the ones the list names, and nothing else fails.
 void main(List<String> args) {
   String? expectFailures;
   final paths = <String>[];
@@ -92,7 +95,11 @@ void main(List<String> args) {
       paths.add(args[i]);
     }
   }
-  run(paths.isEmpty ? const ['conformance'] : paths);
+  run(
+    paths.isEmpty
+        ? [conformanceDir(Directory.current.path, Platform.environment)]
+        : paths,
+  );
   final failed = summarize();
   if (expectFailures == null) {
     exit(failed > 0 ? 1 : 0);

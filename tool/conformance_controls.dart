@@ -40,8 +40,15 @@
 //
 // The scratch copies live under .dart_tool/conformance-controls/ and touch
 // nothing outside the repository.
+//
+// The corpus and the controls are the vendored copies unless
+// SERIALIZE_CONFORMANCE_DIR and SERIALIZE_CONFORMANCE_CONTROLS_DIR name others
+// (test/conformance_dirs.dart): the nightly functional test points them at a
+// fresh checkout of mas-bandwidth/serialize.
 
 import 'dart:io';
+
+import '../test/conformance_dirs.dart';
 
 /// One string replacement in one library file.
 final class _Patch {
@@ -294,6 +301,7 @@ String? _build(_Control control, Directory root, Directory scratch) {
   _copyTree(Directory('${root.path}/lib'), Directory('${scratch.path}/lib'));
   Directory('${scratch.path}/test').createSync(recursive: true);
   for (final file in [
+    'test/conformance_dirs.dart',
     'test/conformance_test.dart',
     'test/conformance_runner.dart',
     'test/harness.dart',
@@ -323,9 +331,8 @@ String? _build(_Control control, Directory root, Directory scratch) {
 }
 
 Future<bool> _runControl(_Control control, Directory root) async {
-  final expected = File(
-    '${root.path}/conformance-controls/${control.name}.expected',
-  );
+  final controlsDir = conformanceControlsDir(root.path, Platform.environment);
+  final expected = File('$controlsDir/${control.name}.expected');
   if (!expected.existsSync()) {
     print('FAIL ${control.name}: no ${expected.path} naming its vectors');
     return false;
@@ -338,12 +345,15 @@ Future<bool> _runControl(_Control control, Directory root) async {
     print('FAIL ${control.name}: $problem');
     return false;
   }
+  final corpusDir = Directory(
+    conformanceDir(root.path, Platform.environment),
+  ).absolute.path;
   final result = await Process.run(Platform.resolvedExecutable, [
     'run',
     'test/conformance_test.dart',
     '--expect-failures',
     expected.absolute.path,
-    Directory('${root.path}/conformance').absolute.path,
+    corpusDir,
   ], workingDirectory: scratch.path);
   final verdict = (result.stdout as String)
       .split('\n')
@@ -364,10 +374,11 @@ Future<bool> _runControl(_Control control, Directory root) async {
 /// The unknown-operation control: the real runner, pointed at a file whose
 /// operation has no runner, must go red.
 Future<bool> _runUnknownOperation(Directory root) async {
+  final controlsDir = conformanceControlsDir(root.path, Platform.environment);
   final result = await Process.run(Platform.resolvedExecutable, [
     'run',
     'test/conformance_test.dart',
-    'conformance-controls/unknown-operation.txt',
+    '$controlsDir/unknown-operation.txt',
   ], workingDirectory: root.path);
   if (result.exitCode == 0) {
     print(
@@ -406,7 +417,7 @@ Future<void> main() async {
   final known = {for (final control in _controls) control.name};
   var unclaimed = 0;
   for (final entity in Directory(
-    '${root.path}/conformance-controls',
+    conformanceControlsDir(root.path, Platform.environment),
   ).listSync()) {
     final name = entity.uri.pathSegments.last;
     if (name.endsWith('.expected') &&

@@ -1,0 +1,119 @@
+name: nightly conformance
+
+# A functional test, nightly, on our own fleet: this port held to the CURRENT
+# C/C++ data in mas-bandwidth/serialize, not only to the copy vendored here.
+#
+# CI on push proves the port against its vendored conformance/ and
+# conformance-controls/, and the interop job holds those to the pinned
+# release. Nothing there notices when upstream main moves on: a vector added,
+# a control's .expected list changed, the standard revised. This job does.
+# It checks out mas-bandwidth/serialize at main HEAD, builds the C++
+# reference and runs its own ctest (its conformance runner and negative
+# controls, proving the corpus at HEAD is what C/C++ accepts today), then
+# runs this port's conformance runner and negative controls against THAT
+# corpus (SERIALIZE_CONFORMANCE_DIR and SERIALIZE_CONFORMANCE_CONTROLS_DIR,
+# test/conformance_dirs.dart), and finally diffs the vendored copies against
+# upstream. Drift fails: a port behind the standard is what this job exists
+# to catch.
+#
+# Upstream has no corpus generator (conformance.cpp: the corpus is
+# deliberately not generated from that code), so the committed corpus at
+# main HEAD is the C/C++ data.
+#
+# No push or pull_request trigger: this never runs in the one-minute CI path.
+
+on:
+  schedule:
+    - cron: '47 5 * * *'   # every day at 05:47 UTC
+  workflow_dispatch:
+    inputs:
+      sabotage:
+        description: 'Negative control: flip one byte of one vector in the upstream copy, so the port must go red'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-conformance-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  conformance:
+    name: port vs mas-bandwidth/serialize main, on the fleet
+    runs-on: [ self-hosted, Linux, X64, fleet ]
+    timeout-minutes: 30
+    steps:
+      - name: Runner
+        run: |
+          echo "runner: $RUNNER_NAME"
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262   # v4
+
+      - name: Check out mas-bandwidth/serialize at main HEAD
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262   # v4
+        with:
+          repository: mas-bandwidth/serialize
+          ref: main
+          path: upstream
+
+      - name: Record the upstream commit
+        run: |
+          echo "upstream: mas-bandwidth/serialize@$(git -C upstream rev-parse HEAD) (committed corpus, no generator upstream)"
+
+      # The reference's own build and ctest: its conformance runner over the
+      # corpus and its negative controls, so the data this port is held to
+      # is data the C/C++ reference accepts at the same commit.
+      - name: Build the C++ reference and run its ctest
+        working-directory: upstream
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --parallel
+          ctest --test-dir build --output-on-failure
+
+      # the SDK lands in the runner's tool cache, never a machine global path
+      - uses: dart-lang/setup-dart@6afc89df92d6eb3834022f73cd65adc8cdfcb92d   # v1
+        with:
+          sdk: 3.13.2
+      - run: dart pub get
+
+      # The negative control for this job: a dispatch with sabotage set turns
+      # bits-1-one's stream byte 01 into 00 in the workspace copy of upstream
+      # (never committed anywhere), so the port decodes 0 where the corpus
+      # states 1 and the conformance step below must go red.
+      - name: Sabotage one upstream vector (negative control only)
+        if: ${{ inputs.sabotage }}
+        run: |
+          sed -i '/^name bits-1-one$/,/^bytes/ s/^bytes 01$/bytes 00/' upstream/conformance/bits.txt
+          grep -A 2 '^name bits-1-one$' upstream/conformance/bits.txt | grep -qx 'bytes 00'
+          echo "sabotaged: conformance/bits.txt bits-1-one bytes 01 -> 00"
+
+      - name: Port conformance against upstream
+        env:
+          SERIALIZE_CONFORMANCE_DIR: ${{ github.workspace }}/upstream/conformance
+        run: dart run test/conformance_test.dart
+
+      # The same corpus with asserts on, as CI runs the unit tests both ways.
+      - name: Port conformance against upstream (asserts on)
+        if: ${{ !cancelled() }}
+        env:
+          SERIALIZE_CONFORMANCE_DIR: ${{ github.workspace }}/upstream/conformance
+        run: dart --enable-asserts run test/conformance_test.dart
+
+      # The negative controls against upstream's .expected lists: a reader
+      # with one refusal rule deleted must fail exactly the upstream vectors
+      # its list names, and a vector whose operation has no runner must go red.
+      - name: Port conformance controls against upstream
+        if: ${{ !cancelled() }}
+        env:
+          SERIALIZE_CONFORMANCE_DIR: ${{ github.workspace }}/upstream/conformance
+          SERIALIZE_CONFORMANCE_CONTROLS_DIR: ${{ github.workspace }}/upstream/conformance-controls
+        run: dart run tool/conformance_controls.dart
+
+      - name: Vendored STANDARD.md, conformance/ and conformance-controls/ match upstream
+        if: ${{ !cancelled() }}
+        run: |
+          diff -u upstream/STANDARD.md STANDARD.md
+          diff -ru upstream/conformance conformance
+          diff -ru upstream/conformance-controls conformance-controls

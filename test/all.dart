@@ -5,6 +5,7 @@ import 'dart:io';
 
 import 'bitpacker_test.dart' as bitpacker;
 import 'bits_required_test.dart' as bits_required;
+import 'conformance_dirs_test.dart' as conformance_dirs;
 import 'conformance_test.dart' as conformance;
 import 'golden_wire_test.dart' as golden_wire;
 import 'harness.dart';
@@ -34,6 +35,7 @@ void main() {
   measure.run();
   golden_wire.run();
   int128.run();
+  conformance_dirs.run();
   conformance.run();
   terminality.run();
   exit(summarize() > 0 ? 1 : 0);

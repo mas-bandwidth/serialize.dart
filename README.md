@@ -202,6 +202,22 @@ Run it in both assert modes: writer contracts live in asserts, so the two
 runs cover both the checked and release shapes of the library (see
 [USAGE.md](USAGE.md#writes-trust-reads-validate)).
 
+[`fuzz/`](fuzz) is the fuzz differential, the family's pattern for a
+language with no native coverage-guided fuzzer. A Go host generates random
+programs over every operation and holds this port to serialize.go v2
+(pinned in `fuzz/go.mod`): identical writer bytes, each reader decoding the
+other's bytes, a measure that never under-measures, and on mutated or
+arbitrary bytes both readers agreeing on whether, where and why they stop.
+CI runs it for 60 s per push, and nightly for an hour on a fresh seed. Its
+negative control writes every int range one bit wider and must go red. It
+needs Go and the Dart SDK (`DART`, default `dart` on PATH):
+
+```
+cd fuzz && go test -run TestDifferentialAgainstSerializeGo -v .   # one fixed round
+cd fuzz && go test -run TestDifferentialAgainstSerializeGo -v . -duration 60s
+tool/fuzz_negative_control.sh
+```
+
 Benchmarking for the serialize family lives in [mas-bandwidth/schema](https://github.com/mas-bandwidth/schema)'s data-driven bench, which measures the generated codecs across every language on one corpus.
 
 ## License

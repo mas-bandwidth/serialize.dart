@@ -1212,9 +1212,10 @@ final class ReadStream implements BitStream {
     if (failed) {
       return false;
     }
-    if (!object.serialize(this)) {
-      // the object's own serialize returned false: latch the failure so it
-      // is terminal, keeping the reason of the read that refused, if any
+    if (!object.serialize(this) || failed) {
+      // the object's own serialize returned false, or an inner read latched a
+      // failure that the callback ignored: latch the failure so it is
+      // terminal, keeping the reason of the read that refused, if any
       _reader.poison();
       return false;
     }

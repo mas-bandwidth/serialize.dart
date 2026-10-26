@@ -154,6 +154,30 @@ void run() {
     // and the echoes after it name no rule either
     expectEquals(stream.refusal, null, 'still no wire reason');
   });
+
+  test(
+    'an object whose serialize ignores an inner refusal still refuses the composition',
+    () {
+      // [0,100] is seven bits wide; 0x7F has low seven bits 127, which fails
+      // the range check with Refusal.valueOutOfRange after consuming 0 bits
+      // (poisoning the stream). Even if the object's serialize callback
+      // ignores that boolean and returns true, serializeObject must return
+      // false while keeping the first refusal reason and terminal latch.
+      final stream = ReadStream(
+        Uint8List.fromList(const [0x7F, 0xAB, 0, 0, 0, 0, 0, 0]),
+      );
+      expect(
+        !stream.serializeObject(_SwallowedFailure()),
+        'the composite read refuses even when the callback returns true',
+      );
+      expectEquals(
+        stream.refusal,
+        Refusal.valueOutOfRange,
+        'the inner refusal reason is preserved',
+      );
+      _expectLatched(stream, 'swallowed inner failure');
+    },
+  );
 }
 
 /// An object of [bits] bits and an align.
@@ -171,4 +195,14 @@ final class _Field implements Serializable {
 final class _Refuser implements Serializable {
   @override
   bool serialize(BitStream stream) => false;
+}
+
+/// An object whose serialize performs a failing primitive read, ignores the
+/// returned false, and returns true anyway.
+final class _SwallowedFailure implements Serializable {
+  @override
+  bool serialize(BitStream stream) {
+    stream.serializeInt(Ref<int>(0), 0, 100);
+    return true;
+  }
 }

@@ -112,4 +112,56 @@ void run() {
     expect(!stream.serializeObject(fields), 'the object refuses too');
     expectEquals(fields.nibble, 9, 'and nothing inside it was written');
   });
+
+  test(
+    'serializeObject: refuses when an inner read latched failure even if the callback returns true',
+    () {
+      // One byte (8 bits) in the stream: the first 4-bit read inside the
+      // callback consumes 4 bits, the next 8-bit read overflows the remaining
+      // 4 bits and latches Refusal.pastEnd, and the callback ignores that
+      // false and returns true. serializeObject must still return false.
+      final stream = ReadStream(Uint8List.fromList(const [0xAB]));
+      final partial = _SwallowedPartialRead();
+      expect(
+        !stream.serializeObject(partial),
+        'serializeObject refuses when an inner read latched failure',
+      );
+      expectEquals(
+        partial.firstNibble,
+        0xB,
+        'the first read before the refusal ran',
+      );
+      expectEquals(
+        partial.secondByte,
+        0x77,
+        'the failing read left its holder untouched',
+      );
+      expect(stream.failed, 'the stream remains latched');
+      expectEquals(
+        stream.refusal,
+        Refusal.pastEnd,
+        'the first refusal reason stands',
+      );
+      expectEquals(stream.bitsProcessed, 9, 'poisoned past the 8-bit buffer');
+    },
+  );
+}
+
+final class _SwallowedPartialRead implements Serializable {
+  int firstNibble = 0;
+  int secondByte = 0x77;
+
+  @override
+  bool serialize(BitStream stream) {
+    final nibbleRef = Ref<int>(firstNibble);
+    if (stream.serializeBits(nibbleRef, 4)) {
+      firstNibble = nibbleRef.value;
+    }
+    final byteRef = Ref<int>(secondByte);
+    stream.serializeBits(
+      byteRef,
+      8,
+    ); // fails and latches stream, return value ignored
+    return true;
+  }
 }

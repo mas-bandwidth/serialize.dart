@@ -208,6 +208,7 @@ enum _Kind {
   fixed,
   object,
   end,
+  reject,
 }
 
 bool _isBitPattern(_Kind kind) =>
@@ -374,6 +375,18 @@ bool _runStep(BitStream stream, _Step step) {
     case _Kind.end:
       return stream.serializeEnd();
 
+    case _Kind.reject:
+      // STANDARD.md, "The vector format": at the top level the caller refuses
+      // through the reject entry point; inside an object, the object's
+      // serialize returns false without refusing on its own, and the object
+      // must latch rejected. Only a read can be refused: a reject reaching a
+      // writer or a measure belongs to a refused vector, which no writer leg
+      // runs, so it refuses here
+      if (_objectDepth > 0 || stream is! ReadStream) {
+        return false;
+      }
+      return stream.reject();
+
     case _Kind.object:
       // nesting is driven by _runSteps, which owns the step range an object
       // wraps; a bare object step reaching here is a runner bug
@@ -406,7 +419,35 @@ final class _NestedObject implements Serializable {
   final _Run run;
 
   @override
-  bool serialize(BitStream stream) => _runSteps(stream, steps, start, end, run);
+  bool serialize(BitStream stream) {
+    _objectDepth++;
+    try {
+      return _runSteps(stream, steps, start, end, run);
+    } finally {
+      _objectDepth--;
+    }
+  }
+}
+
+/// How many nested objects the run is inside, which decides how a `reject`
+/// step refuses.
+int _objectDepth = 0;
+
+/// A nested object whose serialize refuses on its own, reading nothing.
+final class _RefusingObject implements Serializable {
+  @override
+  bool serialize(BitStream stream) => false;
+}
+
+/// An empty nested object that records whether its serialize ran.
+final class _EmptyObject implements Serializable {
+  bool called = false;
+
+  @override
+  bool serialize(BitStream stream) {
+    called = true;
+    return true;
+  }
 }
 
 bool _runSteps(
@@ -470,6 +511,8 @@ _Step? _stepFromWords(String text) {
       return _Step(_Kind.align);
     case 'end' when words.length == 1:
       return _Step(_Kind.end);
+    case 'reject' when words.length == 1:
+      return _Step(_Kind.reject);
     case 'float' when words.length == 1:
       return _Step(_Kind.float32);
     case 'double' when words.length == 1:
@@ -686,7 +729,7 @@ String _renderStep(_Step step) {
     // neither an object, an align nor an end has a value of its own; for
     // align and end the corpus states the padding consumed, which a
     // conforming read always finds zero
-    _Kind.object || _Kind.align || _Kind.end => '0',
+    _Kind.object || _Kind.align || _Kind.end || _Kind.reject => '0',
     _Kind.boolean => step.boolean ? 'true' : 'false',
     _Kind.bytes => _hexBytes(step.buffer),
     _Kind.string => _hexBytes(utf8.encode(step.text)),
@@ -756,6 +799,48 @@ void _failUnlessTerminal(_Vector vector, ReadStream stream) {
   }
 }
 
+/// On the refused [stream] of an object vector, a nested object must refuse
+/// before its serialize runs, moving neither the cursor nor the reason.
+void _failUnlessObjectRefusesOnFailedStream(_Vector vector, ReadStream stream) {
+  final bitsBefore = stream.bitsProcessed;
+  final reasonBefore = stream.refusal;
+  final empty = _EmptyObject();
+  if (stream.serializeObject(empty)) {
+    _fail(vector, 'an object read after the refusal was accepted');
+  } else if (empty.called) {
+    _fail(vector, 'an object read after the refusal ran its serialize');
+  } else if (stream.bitsProcessed != bitsBefore ||
+      stream.refusal != reasonBefore) {
+    _fail(vector, 'an object read after the refusal changed the stream');
+  }
+}
+
+/// STANDARD.md, "Refusal reasons": over every refused object vector's bytes,
+/// a nested object whose serialize returns false with nothing refused inside
+/// it must refuse, latch rejected, and keep it through the echo reads after.
+void _failUnlessCallbackRefusalLatchesRejected(_Vector vector) {
+  final stream = ReadStream(_streamBytes(vector));
+  if (stream.serializeObject(_RefusingObject())) {
+    _fail(vector, 'serializeObject accepted a serialize returning false');
+    return;
+  }
+  if (stream.refusal != Refusal.rejected) {
+    _fail(
+      vector,
+      'a serialize returning false latched '
+      '${stream.refusal?.name ?? 'no reason'}, not rejected',
+    );
+    return;
+  }
+  final probe = Ref<int>(0x77);
+  if (stream.serializeBits(probe, 8) ||
+      probe.value != 0x77 ||
+      stream.serializeObject(_RefusingObject()) ||
+      stream.refusal != Refusal.rejected) {
+    _fail(vector, 'the echo reads after a rejected object changed the stream');
+  }
+}
+
 void _runReader(_Vector vector, List<_Step> steps) {
   final stream = ReadStream(_streamBytes(vector));
 
@@ -817,6 +902,10 @@ void _runReader(_Vector vector, List<_Step> steps) {
     }
 
     _failUnlessTerminal(vector, stream);
+    if (vector.file.endsWith('object.txt')) {
+      _failUnlessObjectRefusesOnFailedStream(vector, stream);
+      _failUnlessCallbackRefusalLatchesRejected(vector);
+    }
     return;
   }
 

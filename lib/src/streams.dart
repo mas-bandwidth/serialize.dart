@@ -837,9 +837,8 @@ final class ReadStream implements BitStream {
   /// degenerate range consumes nothing and so has no past-end check of its
   /// own — ask [BitReader.wouldReadPastEnd] for zero bits to see the latch.
   bool _refuse(Refusal reason) {
-    // only a refusal on a stream that has not failed names a rule: on a
-    // failed stream every refusal is an echo, including one after a caller's
-    // own serialize refused with no wire rule, whose reason stays null
+    // only a refusal on a stream that has not failed names a reason: on a
+    // failed stream every refusal is an echo and the first reason stays
     if (!failed) {
       _refusal = reason;
     }
@@ -849,10 +848,18 @@ final class ReadStream implements BitStream {
 
   /// Why this stream refused: the reason for the first refused read since the
   /// stream was created or [reset], spelled by [Refusal.name] exactly as
-  /// STANDARD.md spells it. Null while nothing has been refused, and on a
-  /// stream that failed only because a caller's own [Serializable.serialize]
-  /// returned false without a refused read, which names no wire rule.
+  /// STANDARD.md spells it. Null exactly while nothing has been refused: a
+  /// refused stream always reports a reason, [Refusal.rejected] when the
+  /// caller refused rather than the wire.
   Refusal? get refusal => _refusal;
+
+  /// The caller's own refusal: the bytes read so far were well formed, and
+  /// the caller refuses the value they carry. Latches the stream as
+  /// [Refusal.rejected], terminal like every refusal, unless a read already
+  /// refused, whose reason is kept (STANDARD.md, "Refusal reasons"). Always
+  /// returns false, so a serialize function refuses with
+  /// `return stream.reject();`.
+  bool reject() => _refuse(Refusal.rejected);
 
   /// True once a read on this stream has failed, and until [reset]. Every
   /// read after a failure fails: nothing after the failing operation has a
@@ -1208,6 +1215,8 @@ final class ReadStream implements BitStream {
   /// state is consulted first, so a nested object refuses on a stream that
   /// has already failed, and a refusal inside the object propagates out of
   /// the composition rather than being swallowed by it, keeping its reason.
+  /// An object whose serialize returns false with nothing refused inside it
+  /// is its caller refusing, and latches [Refusal.rejected].
   bool serializeObject(Serializable object) {
     if (failed) {
       return false;
@@ -1215,9 +1224,9 @@ final class ReadStream implements BitStream {
     if (!object.serialize(this) || failed) {
       // the object's own serialize returned false, or an inner read latched a
       // failure that the callback ignored: latch the failure so it is
-      // terminal, keeping the reason of the read that refused, if any
-      _reader.poison();
-      return false;
+      // terminal, keeping the reason of the read that refused, or rejected
+      // when nothing did
+      return _refuse(Refusal.rejected);
     }
     return true;
   }

@@ -38,7 +38,13 @@ enum Refusal {
 
   /// An encoding a conforming writer never produces for the value it
   /// carries: the int_relative absolute tier carrying a bounded difference.
-  nonCanonical('non_canonical');
+  nonCanonical('non_canonical'),
+
+  /// The bytes were well formed, and the reader's caller refused the value
+  /// they carry: [ReadStream.reject] at the top level, or a nested object
+  /// whose [Serializable.serialize] returned false with nothing refused
+  /// inside it. No wire rule refused, so no wire reason is reported.
+  rejected('rejected');
 
   const Refusal(this.name);
 

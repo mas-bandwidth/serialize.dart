@@ -93,11 +93,19 @@ corpus do:
 | `invalidUtf8` | `invalid_utf8` | a string payload that is not well-formed UTF-8 |
 | `embeddedNul` | `embedded_nul` | a zero byte among a string's bytes |
 | `nonCanonical` | `non_canonical` | an int_relative absolute tier carrying a difference a bounded tier takes |
+| `rejected` | `rejected` | the bytes were well formed, and you refused the value they carry |
 
 The later refusals of a failed stream are echoes of the first and keep its
-reason. A stream that failed only because your own `Serializable.serialize`
-returned `false`, with no refused read, reports `null`: no wire rule
-refused it.
+reason.
+
+**Your own refusal is `rejected`.** When the bytes are well formed but your
+validation says no (an enum value you do not know, two fields that
+contradict each other), call `ReadStream.reject()`: it latches `rejected`,
+terminal like any refusal, and returns `false`, so it reads
+`return reader.reject();`. Inside a nested object, returning `false` from
+your `Serializable.serialize` does the same: `serializeObject` latches
+`rejected` when nothing inside the object refused, and keeps the inner
+read's reason when something did. A refused stream always reports a reason.
 
 **A refused read leaves its destination unwritten.** The `Ref` holder you
 passed still holds exactly what it held before the call, so a caller that

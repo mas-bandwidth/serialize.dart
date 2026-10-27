@@ -33,6 +33,13 @@ jobs:
       - name: The corpus passes on the web target
         run: dart run tool/web_conformance.dart
 
+      # The float/double write-then-read fuzz under dart2wasm: read finite
+      # patterns, write them back, require the same bytes, with an integer
+      # oracle. dart2wasm once flipped the quiet bit of an sNaN-shaped 32-bit
+      # half (lib/src/float32.dart), which only the web target can show.
+      - name: Float/double write-then-read fuzz on the web target
+        run: dart run tool/web_float_fuzz.dart 1 1000000
+
   # The fuzz smoke: the C++ reference runs libFuzzer for 60 s on every push;
   # Dart has no native coverage-guided fuzzer, so this port runs the family's
   # differential instead (fuzz/differential_test.go, as serialize.lua,

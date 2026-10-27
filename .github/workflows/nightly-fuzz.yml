@@ -1,0 +1,83 @@
+name: nightly fuzz
+
+# The extended fuzz, nightly: the same differential the CI `fuzz` job runs
+# for 60 s on every push (fuzz/differential_test.go: this port against
+# serialize.go v2, pinned in fuzz/go.mod), run for an hour on a seed that
+# changes every night. The C++ reference's nightly runs libFuzzer for an hour
+# with a corpus cached across runs; this differential has no corpus to carry,
+# since a program is generated from (seed, round), so what accumulates across
+# nights is the seeds: each run draws a fresh one, prints it, and a red round
+# names the exact replay command. The disagreements of a red round, and the
+# whole log, are uploaded as the run's failing inputs.
+#
+# No push or pull_request trigger: this never runs in the CI path.
+
+on:
+  schedule:
+    - cron: '23 8 * * *'   # every day at 08:23 UTC
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: 'Fuzz duration in seconds (rounds of 2000 programs until it is spent)'
+        default: '3600'
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-fuzz-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  fuzz:
+    name: fuzz (differential vs serialize.go, extended)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      DURATION: ${{ github.event.inputs.duration || '3600' }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262   # v4
+
+      - uses: dart-lang/setup-dart@6afc89df92d6eb3834022f73cd65adc8cdfcb92d   # v1
+        with:
+          sdk: 3.13.2
+      - run: dart pub get
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e   # v7
+        with:
+          go-version-file: fuzz/go.mod
+          cache-dependency-path: fuzz/go.sum
+
+      # a fresh seed every run, recorded in the log and the run summary so a
+      # red night replays exactly: -seed <seed> -rounds-from <round> -duration 0
+      - name: Seed
+        run: |
+          seed=$(od -An -N8 -tu8 /dev/urandom | tr -d ' ')
+          echo "SEED=$seed" >> "$GITHUB_ENV"
+          echo "fuzz seed: $seed, duration: ${DURATION}s"
+          echo "fuzz seed \`$seed\`, duration ${DURATION} s" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Fuzz
+        working-directory: fuzz
+        run: |
+          set -o pipefail
+          mkdir -p "$RUNNER_TEMP/fuzz-failures"
+          go test -count=1 -timeout "$((DURATION + 900))s" -run TestDifferentialAgainstSerializeGo -v . \
+            -duration "${DURATION}s" -seed "$SEED" -failures "$RUNNER_TEMP/fuzz-failures" \
+            2>&1 | tee "$RUNNER_TEMP/fuzz-failures/fuzz.log"
+
+      # the same negative control as CI: the instrument must still go red on
+      # a widened int range, so a green night is a measurement
+      - name: Fuzz negative control (widened int must go red)
+        run: tool/fuzz_negative_control.sh
+
+      - name: Upload failing inputs
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9   # v7
+        with:
+          name: fuzz-failures
+          path: |
+            ${{ runner.temp }}/fuzz-failures
+            fuzz/negative-control.log
+          if-no-files-found: ignore

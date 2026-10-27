@@ -33,6 +33,43 @@ jobs:
       - name: The corpus passes on the web target
         run: dart run tool/web_conformance.dart
 
+  # The fuzz smoke: the C++ reference runs libFuzzer for 60 s on every push;
+  # Dart has no native coverage-guided fuzzer, so this port runs the family's
+  # differential instead (fuzz/differential_test.go, as serialize.lua,
+  # serialize.luau and serialize.nut do): a Go host generates random programs
+  # over every operation, serialize.go v2 (pinned in fuzz/go.mod) is the other
+  # side, and the two writers must emit identical bytes, each reader must
+  # decode the other's bytes, and on mutated and arbitrary bytes both readers
+  # must agree on whether, where and why they stop. 60 s of rounds on the
+  # fixed seed; .github/workflows/nightly-fuzz.yml runs it longer, on a seed
+  # that changes every night. A functional test: it spawns the compiled Dart
+  # driver, so it lives in its own job, never in test/all.dart.
+  fuzz:
+    name: fuzz (differential vs serialize.go, 60 s smoke)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: 3.13.2
+      - run: dart pub get
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: fuzz/go.mod
+          cache-dependency-path: fuzz/go.sum
+      - name: go vet
+        working-directory: fuzz
+        run: go vet ./...
+      - name: Fuzz smoke (60 s)
+        working-directory: fuzz
+        run: go test -count=1 -timeout 600s -run TestDifferentialAgainstSerializeGo -v . -duration 60s
+
+      # A fuzzer nobody has seen go red is a claim: with the Go writer
+      # widening every int range by one bit, the same differential must fail
+      # by a disagreement.
+      - name: Fuzz negative control (widened int must go red)
+        run: tool/fuzz_negative_control.sh
+
   spec-sync:
     name: STANDARD.md and conformance/ match upstream
     runs-on: ubuntu-latest

@@ -258,6 +258,26 @@ const List<_Control> _controls = [
       ),
     ],
   ),
+  // Dart refuses at both ends of a nested object, on entry and again when the
+  // callback returns over a latched failure, so deleting the rule deletes both
+  // checks: either alone still refuses an empty object on a failed stream.
+  _Control(
+    'object-terminal',
+    'a nested object on a failed stream refuses before its callback runs',
+    [
+      _Patch(
+        _streams,
+        '    if (failed) {\n'
+            '      return false;\n'
+            '    }\n'
+            '    if (!object.serialize(this) || failed) {',
+        '    if (failed && identical(object, this)) {$_deleted\n'
+            '      return false;\n'
+            '    }\n'
+            '    if (!object.serialize(this) || (failed && identical(object, this))) {',
+      ),
+    ],
+  ),
   _Control('wrong-reason', 'a refusal names the rule that refused it', [
     _Patch(
       _streams,

@@ -135,6 +135,37 @@ void run() {
     ).serializeFloat(Ref<double>(doubleFromFloat32Bits(0x7F7FFFFF)));
   });
 
+  // A finite pattern whose 32-bit half is shaped like a signaling NaN: the
+  // conversions once overlaid typed-list views that dart2wasm does not keep
+  // bit transparent, and these came back with the quiet bit set. The web
+  // target runs the same round trip at scale (tool/web_float_fuzz.dart).
+  test('float and double: sNaN-shaped 32-bit halves round trip as bytes', () {
+    for (final wire in const [
+      [0x00, 0x02, 0x10, 0xf2, 0x76, 0x22, 0xb7, 0x7f],
+      [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xb0, 0x7f],
+      [0x50, 0xe1, 0x91, 0x7f, 0xcf, 0x1a, 0x16, 0x00],
+      [0x01, 0x00, 0x80, 0x7f, 0x01, 0x00, 0x80, 0xff],
+    ]) {
+      final read = Ref<double>(0);
+      expect(
+        ReadStream(Uint8List.fromList(wire)).serializeDouble(read),
+        '$wire',
+      );
+      final writer = WriteStream(Uint8List(8));
+      writer.serializeDouble(read);
+      writer.flush();
+      expectBytes(writer.data(), wire, 'double $wire written back');
+    }
+    for (final bits in const [0x00000001, 0x3FBFFFFF, 0x7F3FFFFF, 0x80400001]) {
+      final read = Ref<double>(0);
+      expect(ReadStream(_wire(bits, 32)).serializeFloat(read), '$bits read');
+      final writer = WriteStream(Uint8List(8));
+      writer.serializeFloat(read);
+      writer.flush();
+      expectBytes(writer.data(), _wire(bits, 32), 'float $bits written back');
+    }
+  });
+
   test('the finite bit tests look at the exponent field only', () {
     expect(float32BitsAreFinite(0x7F7FFFFF), 'largest finite float');
     expect(float32BitsAreFinite(0x80000000), 'negative zero');

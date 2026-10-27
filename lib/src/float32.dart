@@ -21,15 +21,25 @@
 
 import 'dart:typed_data';
 
-// One 8-byte scratch buffer under four overlaid typed-list views: indexed
-// typed-list access compiles to a plain load/store, cheaper than the ByteData
-// methods on hot paths. The views are host-endian, which is correct here:
-// every conversion is a same-width store-then-load on the same bytes, so the
-// byte order cancels — no value in this file ever meets the wire directly.
-final Float32List _f32 = Float32List(2);
-final Uint32List _u32 = _f32.buffer.asUint32List();
-final Float64List _f64 = _f32.buffer.asFloat64List();
-final Uint64List _u64 = _f32.buffer.asUint64List();
+// The bit conversions go through one 8-byte ByteData scratch, a plain byte
+// buffer that no typed-list view of another element type shares. Do not
+// replace it with overlaid Float32List/Uint32List/Float64List/Uint64List
+// views of one buffer: under dart2wasm such views are not bit transparent, and
+// a 32-bit half shaped like a signaling NaN (exponent all ones, quiet bit
+// clear, payload nonzero) comes back with its quiet bit set. That turned 526
+// of 131008 random finite doubles into other doubles, NaNs and infinities on
+// read (past the non_finite_float check, which tests the raw bits), made the
+// writer emit wrong bytes, and misread about 1 in 1000 finite float32
+// patterns. tool/web_float_fuzz.dart holds the web target to it.
+//
+// The scratch is accessed host-endian, which is correct here: every
+// conversion is a same-width store-then-load on the same bytes, so the byte
+// order cancels; no value in this file ever meets the wire directly.
+final ByteData _scratch = ByteData(8);
+
+// [fround] is a value conversion, not a bit one, so a lone Float32List is
+// exact for it on every target: a store rounds to binary32, a load widens.
+final Float32List _f32 = Float32List(1);
 
 /// [value] rounded to the nearest float32, as a double: the float32 rounding
 /// boundary the compressed float arithmetic is pinned to.
@@ -45,8 +55,8 @@ double fround(double value) {
 /// carries no NaN, so no caller of the format sees one.
 @pragma('vm:prefer-inline')
 int float32BitsFromDouble(double value) {
-  _f32[0] = value;
-  return _u32[0];
+  _scratch.setFloat32(0, value, Endian.host);
+  return _scratch.getUint32(0, Endian.host);
 }
 
 /// The double whose IEEE-754 single-precision representation is [bits]:
@@ -54,8 +64,8 @@ int float32BitsFromDouble(double value) {
 /// included. A signaling NaN pattern comes back quieted.
 @pragma('vm:prefer-inline')
 double doubleFromFloat32Bits(int bits) {
-  _u32[0] = bits;
-  return _f32[0];
+  _scratch.setUint32(0, bits, Endian.host);
+  return _scratch.getFloat32(0, Endian.host);
 }
 
 /// Is the float32 pattern [bits] finite? False exactly when its exponent
@@ -74,13 +84,13 @@ bool float64BitsAreFinite(int bits) =>
 /// exactly the bits of the Dart double, no conversion at all.
 @pragma('vm:prefer-inline')
 int float64BitsFromDouble(double value) {
-  _f64[0] = value;
-  return _u64[0];
+  _scratch.setFloat64(0, value, Endian.host);
+  return _scratch.getInt64(0, Endian.host);
 }
 
 /// The double whose IEEE-754 double-precision representation is [bits].
 @pragma('vm:prefer-inline')
 double doubleFromFloat64Bits(int bits) {
-  _u64[0] = bits;
-  return _f64[0];
+  _scratch.setInt64(0, bits, Endian.host);
+  return _scratch.getFloat64(0, Endian.host);
 }

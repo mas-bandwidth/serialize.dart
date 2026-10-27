@@ -172,7 +172,10 @@ jobs:
     name: interop with the C++ reference
     runs-on: ubuntu-24.04
     env:
-      SERIALIZE_TAG: v2.0.0
+      # serialize main at the 2.0.1 corpus (object read terminality); v2.0.1
+      # is not tagged yet (mas-bandwidth/serialize#130). Move this to the tag
+      # once it exists: the corpus is the same.
+      SERIALIZE_TAG: 3617d3606db9c5686018d6568f0aa761869083c5
     steps:
       - uses: actions/checkout@v4
       - uses: dart-lang/setup-dart@v1
@@ -181,7 +184,11 @@ jobs:
       - run: dart pub get
 
       - name: Check out the C++ reference at the pinned release
-        run: git clone --quiet --depth 1 --branch "$SERIALIZE_TAG" https://github.com/mas-bandwidth/serialize.git /tmp/cpp-serialize
+        # init + fetch rather than clone --branch, so a commit sha pins as well as a tag
+        run: |
+          git init --quiet /tmp/cpp-serialize
+          git -C /tmp/cpp-serialize fetch --quiet --depth 1 https://github.com/mas-bandwidth/serialize.git "$SERIALIZE_TAG"
+          git -C /tmp/cpp-serialize -c advice.detachedHead=false checkout --quiet FETCH_HEAD
 
       # The corpus vendored here must be the one the pinned release carries: the
       # corpus and the runner that can drive it are one artifact, and a reference

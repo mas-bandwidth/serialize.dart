@@ -1,26 +1,30 @@
 #!/bin/sh
 # Re-vendors the wire-format standard and the shared conformance corpus from
-# a released tag of mas-bandwidth/serialize, verbatim:
+# a released tag (or a full commit sha) of mas-bandwidth/serialize, verbatim:
 #
 #   tool/revendor.sh v2.0.0
 #
 # Copies STANDARD.md, conformance/ and conformance-controls/ from a fresh
-# clone at the tag, then shows what changed. Port whatever the diff implies,
-# set SERIALIZE_TAG in .github/workflows/ci.yml to the same tag, and commit
+# fetch of that ref, then shows what changed. Port whatever the diff implies,
+# set SERIALIZE_TAG in .github/workflows/ci.yml to the same ref, and commit
 # the code and the vendored files together.
 set -eu
 
 if [ $# -ne 1 ]; then
-    echo "usage: tool/revendor.sh <tag>" >&2
+    echo "usage: tool/revendor.sh <tag or full commit sha>" >&2
     exit 2
 fi
 tag=$1
 root=$(cd "$(dirname "$0")/.." && pwd)
+mkdir -p "$root/.dart_tool"
 scratch=$(mktemp -d "$root/.dart_tool/revendor.XXXXXX")
-trap 'rm -r "$scratch"' EXIT
+trap 'rm -rf "$scratch"' EXIT
 
-git -c advice.detachedHead=false clone --quiet --depth 1 --branch "$tag" \
-    https://github.com/mas-bandwidth/serialize.git "$scratch/serialize"
+# init + fetch rather than clone --branch, so a commit sha works as well as a tag
+git init --quiet "$scratch/serialize"
+git -C "$scratch/serialize" fetch --quiet --depth 1 \
+    https://github.com/mas-bandwidth/serialize.git "$tag"
+git -C "$scratch/serialize" -c advice.detachedHead=false checkout --quiet FETCH_HEAD
 
 cp "$scratch/serialize/STANDARD.md" "$root/STANDARD.md"
 for dir in conformance conformance-controls; do

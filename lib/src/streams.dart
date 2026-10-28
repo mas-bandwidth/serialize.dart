@@ -27,6 +27,8 @@ import 'refusal.dart';
 
 /// A mutable holder standing in for the reference implementation's
 /// by-reference parameters: the writer reads [value], the reader assigns it.
+/// A language necessity (IMPLEMENTING.md U15): a Dart scalar cannot be
+/// passed by reference.
 final class Ref<T> {
   /// The held value.
   T value;
@@ -346,6 +348,38 @@ bool _isValidUtf16(String value) {
   return true;
 }
 
+/// The reference's serialize_copy_string (IMPLEMENTING.md U15): the longest
+/// prefix of [source] that a string of `bufferSize` [destSize] can carry,
+/// defined on the source's UTF-8 bytes. It takes the bytes before the first
+/// NUL; if more than `destSize - 1` remain, it keeps the first
+/// `destSize - 1` and backs off while the first byte left out is a
+/// continuation byte, so the result never ends inside a character and
+/// [BitStream.serializeString] with `bufferSize = destSize` accepts it.
+/// Dart strings are values, so the prefix is returned.
+///
+/// Dart strings are UTF-16: [destSize] counts bytes of the strict UTF-8
+/// encoding. A [destSize] below 1, or a source holding an unpaired
+/// surrogate (which the strict codec refuses), is write misuse, an
+/// `AssertionError` in the checked build (U9); the release result after
+/// misuse is unspecified.
+String copyString(String source, int destSize) {
+  assert(destSize >= 1, 'copyString destSize below 1 (IMPLEMENTING.md U9)');
+  assert(_isValidUtf16(source), 'copyString source is not valid UTF-16');
+  final bytes = utf8.encode(source);
+  var length = bytes.indexOf(0);
+  if (length < 0) {
+    length = bytes.length;
+  }
+  final room = destSize < 1 ? 0 : destSize - 1;
+  if (length > room) {
+    length = room;
+    while (length > 0 && (bytes[length] & 0xC0) == 0x80) {
+      length--;
+    }
+  }
+  return utf8.decode(Uint8List.sublistView(bytes, 0, length));
+}
+
 // ---------------------------------------------------------------------------
 // The unified surface
 // ---------------------------------------------------------------------------
@@ -474,9 +508,11 @@ abstract interface class BitStream {
   /// serialize function refuses with `return stream.fail(reason);`.
   bool fail([Refusal? reason]);
 
-  /// The caller's own refusal: [fail] with [Refusal.rejected]. Always
-  /// returns false, so a serialize function refuses with
-  /// `return stream.reject();`.
+  /// The caller's own refusal: [fail] with [Refusal.rejected] on a read
+  /// stream, returning false, so a serialize function refuses with
+  /// `return stream.reject();`. It is read only: on a write or a measure it
+  /// is caller misuse, an `AssertionError` in the checked build, and false
+  /// with nothing recorded in release (IMPLEMENTING.md U9).
   bool reject();
 
   /// The number of align bits required at the current bit index.
@@ -495,9 +531,14 @@ abstract interface class BitStream {
 
 /// Stream for writing bitpacked data: a wrapper around [BitWriter] providing
 /// the unified serialize surface, so a single serialize function can write,
-/// read and measure a message. Write operations always return true — all
-/// checking on the write path is performed by debug asserts only, per the
-/// writer-trusted doctrine.
+/// read and measure a message. Write misuse has one mechanism, the trap
+/// (IMPLEMENTING.md U9): in this port the trap is Dart's `assert`, which
+/// throws an `AssertionError` at the call in the checked build
+/// (`--enable-asserts`) before a bit of the operation is written. Write
+/// misuse never latches: no reason is recorded and no operation returns
+/// false for it. A release build compiles every check out, and its output
+/// after misuse is unspecified. Every write operation returns true, except
+/// [fail] (false, in every build) and [reject] (a trap; false in release).
 final class WriteStream implements BitStream {
   final BitWriter _writer;
 
@@ -915,11 +956,18 @@ final class WriteStream implements BitStream {
   }
 
   /// A write stream refuses nothing (IMPLEMENTING.md U9, U14): records
-  /// nothing, never throws, and returns false.
+  /// nothing, never traps, and returns false, in every build, so a serialize
+  /// function shared by the read and write sides can call it.
   bool fail([Refusal? reason]) => false;
 
-  /// A write stream refuses nothing: returns false, as [fail].
-  bool reject() => false;
+  /// The caller's refusal is read only (IMPLEMENTING.md U2, U9): reject on a
+  /// write stream is caller misuse, and traps (an `AssertionError`) in the
+  /// checked build. In release it returns false and records nothing, the one
+  /// unchecked result U9 promises.
+  bool reject() {
+    assert(false, 'reject on a write stream (IMPLEMENTING.md U9)');
+    return false;
+  }
 
   /// Flushes the stream to memory. Always call this after you finish
   /// writing and before you call [data]: the buffer's contents are
@@ -1748,14 +1796,17 @@ final class MeasureStream implements BitStream {
     return true;
   }
 
-  /// Measures 32 bits.
+  /// Measures 32 bits. The value must be finite after it narrows to float32,
+  /// asserted as on write (IMPLEMENTING.md U6).
   bool serializeFloat(Ref<double> value) {
+    assert(float32BitsAreFinite(float32BitsFromDouble(value.value)));
     _bitsWritten += 32;
     return true;
   }
 
-  /// Measures 64 bits.
+  /// Measures 64 bits. The value must be finite, asserted as on write.
   bool serializeDouble(Ref<double> value) {
+    assert(value.value.isFinite);
     _bitsWritten += 64;
     return true;
   }
@@ -1769,12 +1820,19 @@ final class MeasureStream implements BitStream {
   ) {
     final conforming = _compressedFloatParams(min, max, resolution);
     assert(conforming, 'a non-conforming compressed_float declaration');
-    _bitsWritten += _floatParams.bits;
-    return true;
+    final params = _floatParams;
+    return serializeCompressedFloatPrecomputed(
+      value,
+      params.maxIntegerValue,
+      params.bits,
+      params.delta,
+      params.min,
+    );
   }
 
   /// Measures a compressed float from precomputed wire constants: exactly
-  /// [bits]. The constants are checked as on write.
+  /// [bits]. The constants, the top decode and the value are checked as on
+  /// write (IMPLEMENTING.md U6): a non-finite value is caller misuse.
   bool serializeCompressedFloatPrecomputed(
     Ref<double> value,
     int maxIntegerValue,
@@ -1786,6 +1844,8 @@ final class MeasureStream implements BitStream {
       _precomputedConstantsValid(maxIntegerValue, bits, delta),
       'compressed_float constants compressedFloatParams does not derive',
     );
+    assert(fround(fround(min) + fround(delta)).isFinite);
+    assert(fround(value.value).isFinite);
     _bitsWritten += bits;
     return true;
   }
@@ -1897,11 +1957,16 @@ final class MeasureStream implements BitStream {
   }
 
   /// A measure refuses nothing (IMPLEMENTING.md U6, U14): records nothing,
-  /// never throws, and returns false.
+  /// never traps, and returns false, in every build.
   bool fail([Refusal? reason]) => false;
 
-  /// A measure refuses nothing: returns false, as [fail].
-  bool reject() => false;
+  /// reject on a measure is caller misuse, as on a write (IMPLEMENTING.md
+  /// U6, U9): an `AssertionError` in the checked build; in release it returns
+  /// false and records nothing.
+  bool reject() {
+    assert(false, 'reject on a measure stream (IMPLEMENTING.md U9)');
+    return false;
+  }
 
   /// Always the worst case of 7 bits: the measurement is conservative
   /// because the number of align bits depends on where the message lands.

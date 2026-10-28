@@ -289,14 +289,17 @@ void run() {
       ),
       'write over the non-conforming declaration',
     );
-    // a measure shares the declaration arithmetic, but the assert is the
-    // writer's alone: a reader refuses the decode itself, and the read above
-    // ran with asserts on too
-    MeasureStream().serializeCompressedFloat(
-      Ref<double>(witnessMin),
-      witnessMin,
-      witnessMax,
-      witnessRes,
+    // a measure makes every check a write makes (IMPLEMENTING.md U6; C++
+    // asserts it under IsWriting, which a measure sets); a reader refuses
+    // the decode itself, and the read above ran with asserts on too
+    expectThrows(
+      () => MeasureStream().serializeCompressedFloat(
+        Ref<double>(witnessMin),
+        witnessMin,
+        witnessMax,
+        witnessRes,
+      ),
+      'measure over the non-conforming declaration',
     );
   });
 

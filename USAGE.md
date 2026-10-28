@@ -110,9 +110,12 @@ read's reason when something did. A refused stream always reports a reason.
 `reject()` and `fail([reason])` are on every stream, so one serialize
 function can refuse whichever stream it is handed: on a `ReadStream`,
 `fail(reason)` latches that reason exactly as a read that refused for it
-would, and `fail()` with no reason records `rejected`; on a `WriteStream`
-or `MeasureStream` both record nothing, never throw, and return `false`
-(a measure refuses nothing). `refusalName(reader.refusal)` spells the
+would, and `fail()` with no reason records `rejected`. On a `WriteStream`
+or `MeasureStream`, `fail` records nothing, never throws, and returns
+`false`, in every build. `reject()` is read only: on a write or a measure
+it is caller misuse, an `AssertionError` in the checked build like any
+other write misuse, and `false` with nothing recorded in release
+(reference IMPLEMENTING.md U9). `refusalName(reader.refusal)` spells the
 reason, and `none` while nothing has been refused.
 
 **A bad declaration on a read refuses, never throws.** The declarations a
@@ -162,17 +165,23 @@ One rule follows from clean refusal: check the result of any serialized
 value that controls a loop before the loop uses it, or a truncated packet
 spins the loop on garbage.
 
-On the write side, `WriteStream` and `MeasureStream` operations always
-return `true` — caller contracts (bit counts in range, values within
-their declared ranges, `serializeInt` bounds within int32, min ≤ max,
+On the write side there is one misuse mechanism, the trap (reference
+IMPLEMENTING.md U9), and in Dart the trap is `assert`. Caller contracts
+(bit counts in range, values within their declared ranges, `serializeInt` bounds within int32, min ≤ max,
 well-formed string payloads, buffers whose length is a multiple of 8
 bytes, room in the buffer for the whole of a `bytes` or `string` before
-any of it is written) are `assert` statements, the Dart form of the
-family's debug asserts:
+any of it is written, finite `float`, `double` and `compressed_float`
+values, `reject()` only on a read) are `assert` statements, the Dart form
+of the family's debug asserts. A `MeasureStream` makes every check a
+`WriteStream` makes except room and buffer size (U6). Write misuse never
+latches: no reason is recorded, no operation returns `false` for it, and
+the next write goes ahead. Every write and measure operation returns
+`true`, except `fail` (always `false`) and `reject` (above):
 
 - **Checked** (`dart run --enable-asserts`, and
   `dart compile exe --enable-asserts`): contract violations throw
-  `AssertionError` at the call site. Develop and test here.
+  `AssertionError` at the call site, before a bit of the operation is
+  written. That is the trap. Develop and test here.
 - **Release** (the default for `dart run`, `dart compile exe` and Flutter
   release builds): asserts do not exist, exactly as a C++ release build
   compiles `serialize_assert` to nothing. The caller is trusted; misuse
@@ -420,6 +429,19 @@ contract violation (debug-asserted): `utf8.encode` would silently replace
 a lone surrogate with U+FFFD, so it cannot reach the wire faithfully, and
 a conforming reader refuses a NUL.
 
+To bound text that may be too long, `copyString(source, destSize)` (the
+reference's `serialize_copy_string`) returns the longest prefix that
+`serializeString` with `bufferSize = destSize` accepts: the text before
+the first U+0000, cut to at most `destSize - 1` UTF-8 bytes and never
+inside a character. `destSize` counts UTF-8 bytes, not UTF-16 code units.
+A `destSize` below 1, or a source with an unpaired surrogate, is write
+misuse (an `AssertionError` in the checked build).
+
+```dart
+copyString('héllo', 3); // 'h': 'é' needs bytes 2 and 3, and only 2 fit
+copyString('a\u0000b', 8); // 'a'
+```
+
 Format 2.0 removed `wstring`: text travels as `serializeString`. A Dart
 string is UTF-16 already, and `serializeString` carries all of it.
 
@@ -459,7 +481,7 @@ wrapping. A difference of 1 costs a single bit; small differences ride
 payload tiers of 5/8/13/18/23 bits; past the ladder, six zero flags carry
 `current` itself as 32 raw bits.
 
-**The domain is 0 to 2^31 - 1 inclusive** (`intRelativeMax`), for both
+**The domain is 0 to 2^31 - 1 inclusive**, for both
 `previous` and `current`. It belongs to the operation, not to Dart's int:
 a `previous` of 2^31 is caller error exactly as a negative one is. The
 reader reconstructs `current` in Dart's 64-bit int, which cannot wrap,

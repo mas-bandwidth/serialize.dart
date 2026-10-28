@@ -7,6 +7,8 @@ import 'bitpacker_test.dart' as bitpacker;
 import 'bits_required_test.dart' as bits_required;
 import 'conformance_dirs_test.dart' as conformance_dirs;
 import 'conformance_test.dart' as conformance;
+import 'copy_string_test.dart' as copy_string;
+import 'exports_test.dart' as exports;
 import 'golden_wire_test.dart' as golden_wire;
 import 'harness.dart';
 import 'int128_test.dart' as int128;
@@ -22,6 +24,7 @@ import 'serialize_int_test.dart' as serialize_int;
 import 'serialize_object_test.dart' as serialize_object;
 import 'terminality_test.dart' as terminality;
 import 'uniform_rules_test.dart' as uniform_rules;
+import 'write_misuse_test.dart' as write_misuse;
 
 void main() {
   bits_required.run();
@@ -42,5 +45,8 @@ void main() {
   conformance.run();
   terminality.run();
   uniform_rules.run();
+  write_misuse.run();
+  exports.run();
+  copy_string.run();
   exit(summarize() > 0 ? 1 : 0);
 }

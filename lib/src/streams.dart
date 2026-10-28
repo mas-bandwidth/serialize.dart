@@ -321,10 +321,10 @@ bool _startsWithByteOrderMark(Uint8List bytes) =>
 
 /*
     The string payload is well formed BY CONTRACT (STANDARD.md, "string"): a
-    Dart String carrying an unpaired surrogate is a writer contract violation
-    — utf8.encode would silently replace it with U+FFFD — debug-asserted per
-    the writes-trusted doctrine. Referenced only from asserts; compiled out in
-    release.
+    Dart String carrying an unpaired surrogate is write misuse (reference
+    IMPLEMENTING.md U3, U9), trapped by assert in the checked build. Referenced
+    only from asserts; compiled out in release, where the bytes after the
+    misuse are unspecified (utf8.encode's U+FFFD is not documented behaviour).
 */
 bool _isValidUtf16(String value) {
   var i = 0;
@@ -825,8 +825,9 @@ final class WriteStream implements BitStream {
   /// Writes a UTF-8 string: the byte length as serializeInt in
   /// [0,bufferSize-1], then the bytes via [serializeBytes] — which aligns.
   /// The payload is well-formed UTF-8 with no zero byte by the writer's
-  /// contract; a Dart string with an unpaired surrogate or a U+0000 violates
-  /// it (debug-asserted).
+  /// contract; a Dart string with an unpaired surrogate or a U+0000 is write
+  /// misuse, an `AssertionError` in the checked build (U3, U9). Release
+  /// output after that misuse is unspecified.
   bool serializeString(Ref<String> value, int bufferSize) {
     assert(_isValidUtf16(value.value)); // the writer's contract, debug only
     assert(!value.value.contains('\u0000')); // likewise: no embedded NUL

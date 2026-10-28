@@ -424,10 +424,13 @@ precomposed U+00E9), no stripped byte order mark — `dart:convert` drops a
 leading one, and the reader puts it back — noncharacters such as U+FFFF,
 and every plane.
 
-A Dart string carrying an unpaired surrogate, or a U+0000, is a writer
-contract violation (debug-asserted): `utf8.encode` would silently replace
-a lone surrogate with U+FFFD, so it cannot reach the wire faithfully, and
-a conforming reader refuses a NUL.
+A Dart string carrying an unpaired surrogate, or a U+0000, is write
+misuse, on a `WriteStream` and a `MeasureStream` alike: an
+`AssertionError` in the checked build, so no checked build ever sends a
+replacement for it (reference IMPLEMENTING.md U3, U9). A release build
+compiles the check out, and its bytes after that misuse are unspecified:
+whatever `utf8.encode` produces there (a U+FFFD) is not documented
+behaviour, and a caller must never depend on it.
 
 To bound text that may be too long, `copyString(source, destSize)` (the
 reference's `serialize_copy_string`) returns the longest prefix that

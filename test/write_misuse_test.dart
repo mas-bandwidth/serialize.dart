@@ -156,6 +156,23 @@ void run() {
     );
   });
 
+  test('U3 kept: a lone surrogate traps on write and measure', () {
+    for (final text in ['a\uD800b', 'a\uDC00']) {
+      final writer = WriteStream(Uint8List(16));
+      _expectTrap(
+        'write $text',
+        writer,
+        () => writer.serializeString(Ref<String>(text), 16),
+      );
+      final measure = MeasureStream();
+      _expectTrap(
+        'measure $text',
+        measure,
+        () => measure.serializeString(Ref<String>(text), 16),
+      );
+    }
+  });
+
   test('U9: write misuse never latches', () {
     if (!assertsEnabled) {
       return;

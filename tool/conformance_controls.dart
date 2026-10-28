@@ -285,6 +285,24 @@ const List<_Control> _controls = [
       '        return _refuse(Refusal.invalidUtf8);$_deleted',
     ),
   ]),
+  _Control(
+    'object-latch-rejected',
+    'a nested object that refuses on its own latches rejected',
+    [
+      _Patch(
+        _streams,
+        '      return _refuse(Refusal.rejected);',
+        '      return _refuse(Refusal.pastEnd);$_deleted',
+      ),
+    ],
+  ),
+  _Control('reject-reason', 'the caller\'s reject refuses as rejected', [
+    _Patch(
+      _streams,
+      '  bool reject() => _refuse(Refusal.rejected);',
+      '  bool reject() => _refuse(Refusal.valueOutOfRange);$_deleted',
+    ),
+  ]),
 ];
 
 int _occurrences(String text, String needle) {

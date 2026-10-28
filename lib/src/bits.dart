@@ -13,6 +13,17 @@ const int signBit64 = 0x8000000000000000;
 /// All 64 bits set: the unsigned 64-bit maximum, held bit-transparently.
 const int allOnes64 = -1;
 
+/// The signed 64-bit maximum, 2^63 - 1.
+///
+/// This literal is also the library's web guard, on purpose and in one place:
+/// dart2js makes Dart's int a JavaScript double, which cannot hold 2^63 - 1
+/// exactly, so dart2js refuses to compile it, and with it the library, whose
+/// wide values would otherwise round in silence there. dart2wasm keeps int a
+/// 64-bit integer and builds it. tool/web_conformance.dart requires dart2js to
+/// refuse this line by its location and literal, not by the compiler's
+/// wording. Keep it a literal: a computed value compiles under dart2js.
+const int int64Max = 0x7FFFFFFFFFFFFFFF;
+
 /// Unsigned 64-bit less-than.
 bool unsignedLessThan(int a, int b) => (a ^ signBit64) < (b ^ signBit64);
 

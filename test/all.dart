@@ -11,6 +11,7 @@ import 'golden_wire_test.dart' as golden_wire;
 import 'harness.dart';
 import 'int128_test.dart' as int128;
 import 'measure_test.dart' as measure;
+import 'rejected_test.dart' as rejected;
 import 'serialize_bits_test.dart' as serialize_bits;
 import 'serialize_bytes_string_test.dart' as serialize_bytes_string;
 import 'serialize_end_test.dart' as serialize_end;
@@ -20,6 +21,7 @@ import 'serialize_int_relative_test.dart' as serialize_int_relative;
 import 'serialize_int_test.dart' as serialize_int;
 import 'serialize_object_test.dart' as serialize_object;
 import 'terminality_test.dart' as terminality;
+import 'uniform_rules_test.dart' as uniform_rules;
 
 void main() {
   bits_required.run();
@@ -32,11 +34,13 @@ void main() {
   serialize_end.run();
   serialize_fixed.run();
   serialize_object.run();
+  rejected.run();
   measure.run();
   golden_wire.run();
   int128.run();
   conformance_dirs.run();
   conformance.run();
   terminality.run();
+  uniform_rules.run();
   exit(summarize() > 0 ? 1 : 0);
 }

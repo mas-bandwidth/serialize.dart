@@ -87,7 +87,8 @@ parameters). [USAGE.md](USAGE.md) teaches every operation by example.
   refusal, a `Refusal` from the standard's closed list, spelled by
   `Refusal.name` exactly as the standard spells it (`past_end`,
   `value_out_of_range`, `nonzero_padding`, `trailing_data`,
-  `non_finite_float`, `invalid_utf8`, `embedded_nul`, `non_canonical`).
+  `non_finite_float`, `invalid_utf8`, `embedded_nul`, `non_canonical`,
+  and `rejected` for the caller's own refusal).
 - **The relative integer**: `serializeIntRelative` — the flag ladder for
   strictly increasing sequences, one bit for a difference of 1. The domain
   is 0 to 2^31 - 1 inclusive, checked on read in every tier, and the

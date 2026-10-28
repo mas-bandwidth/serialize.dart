@@ -16,6 +16,13 @@ export 'src/float32.dart'
         float64BitsFromDouble,
         fround;
 export 'src/int128.dart' show Int128, UInt128, bitsRequired128;
-export 'src/refusal.dart' show Refusal;
+export 'src/refusal.dart' show Refusal, refusalName;
 export 'src/streams.dart'
-    show BitStream, MeasureStream, ReadStream, Ref, Serializable, WriteStream;
+    show
+        BitStream,
+        MeasureStream,
+        ReadStream,
+        Ref,
+        Serializable,
+        WriteStream,
+        compressedFloatParams;

@@ -128,7 +128,7 @@ final class Int128 {
   static const Int128 minValue = Int128(signBit64, 0);
 
   /// The signed 128-bit maximum, 2^127 - 1.
-  static const Int128 maxValue = Int128(0x7FFFFFFFFFFFFFFF, allOnes64);
+  static const Int128 maxValue = Int128(int64Max, allOnes64);
 
   /// Constructs from a 64-bit value, sign-extending.
   factory Int128.fromInt(int value) => Int128(value < 0 ? allOnes64 : 0, value);

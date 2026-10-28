@@ -93,11 +93,38 @@ corpus do:
 | `invalidUtf8` | `invalid_utf8` | a string payload that is not well-formed UTF-8 |
 | `embeddedNul` | `embedded_nul` | a zero byte among a string's bytes |
 | `nonCanonical` | `non_canonical` | an int_relative absolute tier carrying a difference a bounded tier takes |
+| `rejected` | `rejected` | the bytes were well formed, and you refused the value they carry |
 
 The later refusals of a failed stream are echoes of the first and keep its
-reason. A stream that failed only because your own `Serializable.serialize`
-returned `false`, with no refused read, reports `null`: no wire rule
-refused it.
+reason.
+
+**Your own refusal is `rejected`.** When the bytes are well formed but your
+validation says no (an enum value you do not know, two fields that
+contradict each other), call `ReadStream.reject()`: it latches `rejected`,
+terminal like any refusal, and returns `false`, so it reads
+`return reader.reject();`. Inside a nested object, returning `false` from
+your `Serializable.serialize` does the same: `serializeObject` latches
+`rejected` when nothing inside the object refused, and keeps the inner
+read's reason when something did. A refused stream always reports a reason.
+
+`reject()` and `fail([reason])` are on every stream, so one serialize
+function can refuse whichever stream it is handed: on a `ReadStream`,
+`fail(reason)` latches that reason exactly as a read that refused for it
+would, and `fail()` with no reason records `rejected`; on a `WriteStream`
+or `MeasureStream` both record nothing, never throw, and return `false`
+(a measure refuses nothing). `refusalName(reader.refusal)` spells the
+reason, and `none` while nothing has been refused.
+
+**A bad declaration on a read refuses, never throws.** The declarations a
+read is handed are checked before any bits move, in every build: a `bits`
+count outside its range, `serializeInt` bounds outside int32, a `min` above
+its `max`, a string `bufferSize` below 1, an `int_relative` `previous`
+outside its domain, a fixed point declaration that does not fit its Q
+format, and a compressed float declaration that is not conforming (or
+precomputed constants `compressedFloatParams` would never derive) all
+refuse as `value_out_of_range`, and a stream that already refused keeps its
+first reason (IMPLEMENTING.md U5, U7, U16). On a write or a measure the
+same declarations are caller error, asserted in the checked build.
 
 **A refused read leaves its destination unwritten.** The `Ref` holder you
 passed still holds exactly what it held before the call, so a caller that
@@ -137,9 +164,11 @@ spins the loop on garbage.
 
 On the write side, `WriteStream` and `MeasureStream` operations always
 return `true` — caller contracts (bit counts in range, values within
-their declared ranges, min ≤ max, well-formed string payloads, buffers
-that fit) are `assert` statements, the Dart form of the family's debug
-asserts:
+their declared ranges, `serializeInt` bounds within int32, min ≤ max,
+well-formed string payloads, buffers whose length is a multiple of 8
+bytes, room in the buffer for the whole of a `bytes` or `string` before
+any of it is written) are `assert` statements, the Dart form of the
+family's debug asserts:
 
 - **Checked** (`dart run --enable-asserts`, and
   `dart compile exe --enable-asserts`): contract violations throw
@@ -188,6 +217,11 @@ w.serializeInt(Ref(7), 7, 7); // degenerate range: ZERO bits
 
 Reads refuse values smuggled into the bit headroom of a range (an offset
 above `max - min` fails the read — reject, never clamp).
+
+`serializeInt` bounds are int32 (IMPLEMENTING.md U5). A `min` or `max`
+outside int32 is asserted on write and measure, and refused as
+`value_out_of_range` on read before any bits move: a range such as
+`[0, 0xFFFFFFFF]` belongs in `serializeInt64`.
 
 `serializeInt64` is the same operation across the full 64-bit domain,
 with offsets computed in unsigned arithmetic so ranges wider than 2^63
@@ -291,6 +325,17 @@ quantization ceiling (`value_out_of_range`), and a decode that rounds past
 the float32 range (`non_finite_float`): over `[3 * 2^103, FLT_MAX]` at
 resolution `2^104`, every operand is finite and the top integer still
 decodes to `+inf`.
+
+The constants a declaration implies (the step count, the bit count and
+`delta`) cost a divide, a clamp and a ceil per call. Generated code pays
+them once: `compressedFloatParams(min, max, resolution)` returns them, and
+`serializeCompressedFloatPrecomputed(ref, maxIntegerValue, bits, delta, min)`
+takes them, wire identical to the unified call on every stream.
+
+```dart
+final p = compressedFloatParams(0.0, 10.0, 0.01); // 1000 steps, 10 bits
+w.serializeCompressedFloatPrecomputed(Ref(5.0), p.maxIntegerValue, p.bits, p.delta, 0.0);
+```
 
 ## Nested objects
 

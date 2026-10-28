@@ -144,15 +144,15 @@ void run() {
     _expectLatched(stream, 'object');
   });
 
-  test('an object that refuses on its own is terminal and names no rule', () {
+  test('an object that refuses on its own is terminal and rejected', () {
     // the caller's serialize returned false with no refused read: the stream
-    // latches, and no wire rule is blamed for it
+    // latches as rejected (2.1), and no wire rule is blamed for it
     final stream = ReadStream(_room());
     expect(!stream.serializeObject(_Refuser()), 'refused');
-    expectEquals(stream.refusal, null, 'no wire reason');
+    expectEquals(stream.refusal, Refusal.rejected, 'the caller refused');
     _expectLatched(stream, 'caller refusal');
-    // and the echoes after it name no rule either
-    expectEquals(stream.refusal, null, 'still no wire reason');
+    // and the echoes after it keep that reason
+    expectEquals(stream.refusal, Refusal.rejected, 'still rejected');
   });
 
   test(

@@ -52,23 +52,33 @@ final class _FloatParams {
 
 final _FloatParams _floatParams = _FloatParams();
 
+// The int bounds of reference IMPLEMENTING.md U5: serializeInt is int32.
+const int _int32Min = -0x80000000;
+const int _int32Max = 0x7FFFFFFF;
+
+// The largest float32 below 2^32: the top of a compressed float step count.
+const int _maxIntegerValueTop = 4294967040;
+
 // Derives the compressed float wire constants from a (min,max,res)
 // declaration, mirroring serialize_compressed_float_params: every step is
 // float32, including the parameters themselves (they are float parameters in
-// the reference, so they round to float32 at this boundary). A declaration
-// whose delta or values is not finite in float32 is non-conforming
-// (STANDARD.md, adopted 2026-08-15) — asserted in debug, per the
-// writer-trusted model; the clamp below remains the release backstop.
-void _compressedFloatParams(double min, double max, double resolution) {
+// the reference, so they round to float32 at this boundary). Returns whether
+// the declaration is conforming: min < max, resolution positive, and delta
+// and values finite in float32 (STANDARD.md, adopted 2026-08-15). A
+// non-conforming declaration is write misuse, asserted by the write and
+// measure callers, and refused as value_out_of_range by the read caller
+// (IMPLEMENTING.md U7, U16); the clamp below keeps the derivation defined
+// either way.
+bool _compressedFloatParams(double min, double max, double resolution) {
   min = fround(min);
   max = fround(max);
   resolution = fround(resolution);
-  assert(min < max && resolution > 0);
 
   final delta = fround(max - min);
   var values = fround(delta / resolution);
-  assert(delta.isFinite);
-  assert(values.isFinite);
+  // a NaN anywhere fails every comparison, so it is non-conforming too
+  final conforming =
+      min < max && resolution > 0 && delta.isFinite && values.isFinite;
 
   // clamp so the integer conversion below is defined even for pathological
   // delta / res (the !>= form also catches NaN)
@@ -85,6 +95,44 @@ void _compressedFloatParams(double min, double max, double resolution) {
   _floatParams.delta = delta;
   _floatParams.maxIntegerValue = maxIntegerValue;
   _floatParams.bits = bitsRequired(0, maxIntegerValue);
+  return conforming;
+}
+
+/// The compressed float wire constants of a (min, max, resolution)
+/// declaration, exactly as serializeCompressedFloat derives them on every
+/// call: the reference's serialize_compressed_float_params. A schema compiler
+/// runs this once and passes the results to
+/// [BitStream.serializeCompressedFloatPrecomputed], which then skips the
+/// per-call derivation. The declaration must be conforming (min < max,
+/// resolution positive, delta and the step count finite in float32): a
+/// non-conforming one is caller error, asserted in debug.
+({int maxIntegerValue, int bits, double delta}) compressedFloatParams(
+  double min,
+  double max,
+  double resolution,
+) {
+  final conforming = _compressedFloatParams(min, max, resolution);
+  assert(conforming, 'a non-conforming compressed_float declaration');
+  return (
+    maxIntegerValue: _floatParams.maxIntegerValue,
+    bits: _floatParams.bits,
+    delta: _floatParams.delta,
+  );
+}
+
+// The checks reference IMPLEMENTING.md U16 makes on precomputed compressed
+// float constants without the declaration they came from: maxIntegerValue in
+// [1, 4294967040], bits exactly bitsRequired(0, maxIntegerValue), and delta
+// positive and finite in float32.
+bool _precomputedConstantsValid(int maxIntegerValue, int bits, double delta) {
+  if (maxIntegerValue < 1 || maxIntegerValue > _maxIntegerValueTop) {
+    return false;
+  }
+  if (bits != bitsRequired(0, maxIntegerValue)) {
+    return false;
+  }
+  final delta32 = fround(delta);
+  return delta32 > 0 && delta32.isFinite;
 }
 
 // The wire parameters shared by the write, read and measure implementations
@@ -120,12 +168,21 @@ bool _fixedBoundsFit(int integerBits, int min, int max) {
   return true;
 }
 
-void _fixedPointParams(int integerBits, int fractionBits, int min, int max) {
+// Derives the wire parameters of a fixed point declaration on storage of 8,
+// 16, 32 or 64 bits. Returns whether the declaration fits its Q format; a
+// declaration that does not is write misuse, asserted by the write and
+// measure callers, and refused as value_out_of_range by the read caller
+// (IMPLEMENTING.md U7, U16). Nothing is derived from a declaration that does
+// not fit: a negative fraction bit count cannot even be shifted by.
+bool _fixedPointParams(int integerBits, int fractionBits, int min, int max) {
   final width = integerBits + fractionBits;
-  assert(integerBits >= 1 && fractionBits >= 0);
-  assert(width == 8 || width == 16 || width == 32 || width == 64);
-  assert(min <= max);
-  assert(_fixedBoundsFit(integerBits, min, max));
+  if (integerBits < 1 ||
+      fractionBits < 0 ||
+      !(width == 8 || width == 16 || width == 32 || width == 64) ||
+      min > max ||
+      !_fixedBoundsFit(integerBits, min, max)) {
+    return false;
+  }
 
   // shift the whole-unit bounds into raw fixed point units: wraps two's
   // complement in the unsigned 64-bit domain, exactly as the reference
@@ -137,6 +194,7 @@ void _fixedPointParams(int integerBits, int fractionBits, int min, int max) {
   _fixedParams.rawMin = rawMin;
   _fixedParams.rawRange = rawMax - rawMin;
   _fixedParams.bits = min == max ? 0 : bitsRequired64(rawMin, rawMax);
+  return true;
 }
 
 // The wide (128-bit storage) counterpart, in the unsigned 128-bit domain.
@@ -148,11 +206,16 @@ final class _FixedParams128 {
 
 final _FixedParams128 _fixedParams128 = _FixedParams128();
 
-void _fixedPointParams128(int integerBits, int fractionBits, int min, int max) {
-  assert(integerBits >= 1 && fractionBits >= 0);
-  assert(integerBits + fractionBits == 128);
-  assert(min <= max);
-  assert(_fixedBoundsFit(integerBits, min, max));
+// The 128-bit storage counterpart of [_fixedPointParams], with the same
+// contract: returns whether the declaration fits, derives nothing if not.
+bool _fixedPointParams128(int integerBits, int fractionBits, int min, int max) {
+  if (integerBits < 1 ||
+      fractionBits < 0 ||
+      integerBits + fractionBits != 128 ||
+      min > max ||
+      !_fixedBoundsFit(integerBits, min, max)) {
+    return false;
+  }
 
   final rawMin = Int128.fromInt(min).toUnsigned() << fractionBits;
   final rawMax = Int128.fromInt(max).toUnsigned() << fractionBits;
@@ -166,6 +229,7 @@ void _fixedPointParams128(int integerBits, int fractionBits, int min, int max) {
   _fixedParams128.bits = min == max
       ? 0
       : bitsRequired64(min, max) + fractionBits;
+  return true;
 }
 
 // The relative-integer ladder tiers of serialize_int_relative_internal:
@@ -351,6 +415,17 @@ abstract interface class BitStream {
     double resolution,
   );
 
+  /// Serializes a compressed float from the wire constants
+  /// [compressedFloatParams] derives from its declaration, wire identical to
+  /// [serializeCompressedFloat] over that declaration.
+  bool serializeCompressedFloatPrecomputed(
+    Ref<double> value,
+    int maxIntegerValue,
+    int bits,
+    double delta,
+    double min,
+  );
+
   /// Serializes data.length raw bytes, aligning first.
   bool serializeBytes(Uint8List data);
 
@@ -391,6 +466,18 @@ abstract interface class BitStream {
     int min,
     int max,
   );
+
+  /// Refuses for [reason], or for [Refusal.rejected] when none is given
+  /// (IMPLEMENTING.md U14). On a read stream the refusal latches, terminal,
+  /// and the first reason wins. A write or measure stream refuses nothing:
+  /// there it records nothing and returns false. Always returns false, so a
+  /// serialize function refuses with `return stream.fail(reason);`.
+  bool fail([Refusal? reason]);
+
+  /// The caller's own refusal: [fail] with [Refusal.rejected]. Always
+  /// returns false, so a serialize function refuses with
+  /// `return stream.reject();`.
+  bool reject();
 
   /// The number of align bits required at the current bit index.
   int get alignBits;
@@ -456,6 +543,9 @@ final class WriteStream implements BitStream {
   /// Writes a ranged 32-bit integer: value - min in bitsRequired(min,max)
   /// bits. A degenerate range writes nothing at all.
   bool serializeInt(Ref<int> value, int min, int max) {
+    // IMPLEMENTING.md U5: int bounds are int32, checked on the caller's own
+    // values before anything narrows them
+    assert(min >= _int32Min && max <= _int32Max, 'int bounds are int32');
     assert(min <= max);
     assert(value.value >= min);
     assert(value.value <= max);
@@ -605,14 +695,45 @@ final class WriteStream implements BitStream {
     double max,
     double resolution,
   ) {
-    _compressedFloatParams(min, max, resolution);
+    final conforming = _compressedFloatParams(min, max, resolution);
+    assert(conforming, 'a non-conforming compressed_float declaration');
     final params = _floatParams;
+    return serializeCompressedFloatPrecomputed(
+      value,
+      params.maxIntegerValue,
+      params.bits,
+      params.delta,
+      params.min,
+    );
+  }
+
+  /// Writes a compressed float from precomputed wire constants: the one home
+  /// of the write-side quantization, which [serializeCompressedFloat] runs
+  /// after deriving the constants. The constants must be what
+  /// [compressedFloatParams] derives for a conforming declaration; constants
+  /// that fail the checks it can make without the declaration (the step
+  /// count in [1, 4294967040], [bits] its bit count, [delta] positive and
+  /// finite) are caller error, asserted in debug.
+  bool serializeCompressedFloatPrecomputed(
+    Ref<double> value,
+    int maxIntegerValue,
+    int bits,
+    double delta,
+    double min,
+  ) {
+    assert(
+      _precomputedConstantsValid(maxIntegerValue, bits, delta),
+      'compressed_float constants compressedFloatParams does not derive',
+    );
+    // the float parameter types of the reference
+    delta = fround(delta);
+    min = fround(min);
     // a declaration whose top integer decodes to an infinity is
     // non-conforming as a whole (STANDARD.md, format 2.0), so the writer
     // asserts it even for values that decode finite: the decode of
     // maxIntegerValue is min + delta, rounded once. Write side only: a
     // reader refuses the non-finite decode itself, as non_finite_float
-    assert(fround(params.min + params.delta).isFinite);
+    assert(fround(min + delta).isFinite);
     // the float parameter type of the reference: the value rounds to float32
     // at this boundary
     final value32 = fround(value.value);
@@ -622,7 +743,7 @@ final class WriteStream implements BitStream {
     assert(value32.isFinite);
 
     // clamp with the !>= / !<= form so a NaN is forced into range
-    var normalized = fround(fround(value32 - params.min) / params.delta);
+    var normalized = fround(fround(value32 - min) / delta);
     if (!(normalized >= 0.0)) {
       normalized = 0.0;
     } else if (!(normalized <= 1.0)) {
@@ -631,17 +752,15 @@ final class WriteStream implements BitStream {
     // STANDARD.md pins this to float32 with TWO roundings: the product
     // rounds BEFORE 0.5 is added. Both fround calls are load bearing —
     // fused or widened arithmetic changes the wire.
-    final scaled = fround(
-      normalized * fround(params.maxIntegerValue.toDouble()),
-    );
+    final scaled = fround(normalized * fround(maxIntegerValue.toDouble()));
     var integerValue = fround(scaled + 0.5).floor();
     // STANDARD.md: the integer clamp is normative (2026-08-23, schema#109).
     // Once maxIntegerValue >= 2^23 the float32 ulp at the top of the range
     // reaches 1, so the rounded sum can exceed maxIntegerValue itself.
-    if (integerValue > params.maxIntegerValue) {
-      integerValue = params.maxIntegerValue;
+    if (integerValue > maxIntegerValue) {
+      integerValue = maxIntegerValue;
     }
-    _writer.writeBits(integerValue, params.bits);
+    _writer.writeBits(integerValue, bits);
     return true;
   }
 
@@ -650,6 +769,13 @@ final class WriteStream implements BitStream {
   /// is not written; both sides must already agree on it. A zero-length
   /// array still aligns and writes nothing else.
   bool serializeBytes(Uint8List data) {
+    // IMPLEMENTING.md U10: room for the whole operation, align and payload,
+    // before the first bit, so no align bits go out ahead of a payload that
+    // does not fit
+    assert(
+      _writer.alignBits + data.length * 8 <= _writer.bitsAvailable,
+      'bytes past the end of the buffer',
+    );
     serializeAlign();
     _writer.writeBytes(data);
     return true;
@@ -665,6 +791,14 @@ final class WriteStream implements BitStream {
     assert(!value.value.contains('\u0000')); // likewise: no embedded NUL
     final encoded = utf8.encode(value.value);
     assert(encoded.length < bufferSize);
+    // IMPLEMENTING.md U10: room for the length field, the align after it and
+    // the payload, before the first bit
+    assert(() {
+      final lengthBits = (bufferSize - 1).bitLength;
+      final afterLength = bitsProcessed + lengthBits;
+      final align = (8 - (afterLength & 7)) & 7;
+      return lengthBits + align + encoded.length * 8 <= _writer.bitsAvailable;
+    }(), 'string past the end of the buffer');
     final length = Ref<int>(encoded.length);
     serializeInt(length, 0, bufferSize - 1);
     serializeBytes(encoded);
@@ -730,7 +864,8 @@ final class WriteStream implements BitStream {
     int min,
     int max,
   ) {
-    _fixedPointParams(integerBits, fractionBits, min, max);
+    final fits = _fixedPointParams(integerBits, fractionBits, min, max);
+    assert(fits, 'a fixed point declaration that does not fit its Q format');
     final params = _fixedParams;
     if (min == max) {
       // degenerate range: the value IS the range, nothing to send
@@ -764,7 +899,8 @@ final class WriteStream implements BitStream {
     int min,
     int max,
   ) {
-    _fixedPointParams128(integerBits, fractionBits, min, max);
+    final fits = _fixedPointParams128(integerBits, fractionBits, min, max);
+    assert(fits, 'a fixed point declaration that does not fit its Q format');
     final params = _fixedParams128;
     if (min == max) {
       // degenerate range: zero bits, on every storage width — fractionBits
@@ -778,8 +914,16 @@ final class WriteStream implements BitStream {
     return true;
   }
 
+  /// A write stream refuses nothing (IMPLEMENTING.md U9, U14): records
+  /// nothing, never throws, and returns false.
+  bool fail([Refusal? reason]) => false;
+
+  /// A write stream refuses nothing: returns false, as [fail].
+  bool reject() => false;
+
   /// Flushes the stream to memory. Always call this after you finish
-  /// writing and before you call [data].
+  /// writing and before you call [data]: the buffer's contents are
+  /// unspecified until then (IMPLEMENTING.md U11).
   void flush() => _writer.flushBits();
 
   /// The written portion of the buffer: a view, not a copy. Call [flush]
@@ -837,9 +981,8 @@ final class ReadStream implements BitStream {
   /// degenerate range consumes nothing and so has no past-end check of its
   /// own — ask [BitReader.wouldReadPastEnd] for zero bits to see the latch.
   bool _refuse(Refusal reason) {
-    // only a refusal on a stream that has not failed names a rule: on a
-    // failed stream every refusal is an echo, including one after a caller's
-    // own serialize refused with no wire rule, whose reason stays null
+    // only a refusal on a stream that has not failed names a reason: on a
+    // failed stream every refusal is an echo and the first reason stays
     if (!failed) {
       _refusal = reason;
     }
@@ -849,10 +992,25 @@ final class ReadStream implements BitStream {
 
   /// Why this stream refused: the reason for the first refused read since the
   /// stream was created or [reset], spelled by [Refusal.name] exactly as
-  /// STANDARD.md spells it. Null while nothing has been refused, and on a
-  /// stream that failed only because a caller's own [Serializable.serialize]
-  /// returned false without a refused read, which names no wire rule.
+  /// STANDARD.md spells it. Null exactly while nothing has been refused: a
+  /// refused stream always reports a reason, [Refusal.rejected] when the
+  /// caller refused rather than the wire.
   Refusal? get refusal => _refusal;
+
+  /// The caller's own refusal: the bytes read so far were well formed, and
+  /// the caller refuses the value they carry. Latches the stream as
+  /// [Refusal.rejected], terminal like every refusal, unless a read already
+  /// refused, whose reason is kept (STANDARD.md, "Refusal reasons"). Always
+  /// returns false, so a serialize function refuses with
+  /// `return stream.reject();`.
+  bool reject() => _refuse(Refusal.rejected);
+
+  /// Refuses for [reason] (IMPLEMENTING.md U14), latching it exactly as a
+  /// read that refused for it would. With no reason, the caller is refusing
+  /// without saying why, which records [Refusal.rejected]: never an
+  /// assertion, never a refused stream that reports none. Always returns
+  /// false.
+  bool fail([Refusal? reason]) => _refuse(reason ?? Refusal.rejected);
 
   /// True once a read on this stream has failed, and until [reset]. Every
   /// read after a failure fails: nothing after the failing operation has a
@@ -868,7 +1026,11 @@ final class ReadStream implements BitStream {
   /// Reads [bits] bits into the holder, bits in [1,32]. Returns false if the
   /// read would pass the end of the data.
   bool serializeBits(Ref<int> value, int bits) {
-    assert(bits >= 1 && bits <= 32);
+    // IMPLEMENTING.md U16: a bit count outside its range is a bad
+    // declaration, refused before any bits move
+    if (bits < 1 || bits > 32) {
+      return _refuse(Refusal.valueOutOfRange);
+    }
     if (_reader.wouldReadPastEnd(bits)) {
       return _refuse(Refusal.pastEnd);
     }
@@ -880,7 +1042,9 @@ final class ReadStream implements BitStream {
   /// 32 bits or fewer, otherwise the low 32-bit group then the high
   /// remainder.
   bool serializeBits64(Ref<int> value, int bits) {
-    assert(bits >= 1 && bits <= 64);
+    if (bits < 1 || bits > 64) {
+      return _refuse(Refusal.valueOutOfRange); // a bad declaration (U16)
+    }
     // one bounds check for the whole group: the two reads are sequential on
     // the same stream, so checking their sum accepts and refuses exactly the
     // same inputs as checking each in turn
@@ -901,7 +1065,12 @@ final class ReadStream implements BitStream {
   /// in [min,max] if this returns true; an out-of-range offset smuggled
   /// into the bit headroom is refused.
   bool serializeInt(Ref<int> value, int min, int max) {
-    assert(min <= max);
+    // IMPLEMENTING.md U5, U7 and U16: bounds outside int32, or min above
+    // max, are a bad declaration, refused before any bits move. Never a
+    // value outside the declared range, never a trap the wire chooses
+    if (min > max || min < _int32Min || max > _int32Max) {
+      return _refuse(Refusal.valueOutOfRange);
+    }
     if (min == max) {
       // degenerate range: the value IS the range. Nothing is consumed, so
       // the latch is the only thing that can refuse here
@@ -928,7 +1097,9 @@ final class ReadStream implements BitStream {
 
   /// Reads a ranged 64-bit integer, with the same refusal rules at 64 bits.
   bool serializeInt64(Ref<int> value, int min, int max) {
-    assert(min <= max);
+    if (min > max) {
+      return _refuse(Refusal.valueOutOfRange); // a bad declaration (U7, U16)
+    }
     final bits = bitsRequired64(min, max);
     if (bits == 0) {
       // degenerate range: the value IS the range, nothing is consumed
@@ -964,7 +1135,9 @@ final class ReadStream implements BitStream {
   /// never clamp. A degenerate range where min == max consumes nothing and
   /// takes the value from min.
   bool serializeInt128(Ref<Int128> value, Int128 min, Int128 max) {
-    assert(min <= max);
+    if (min > max) {
+      return _refuse(Refusal.valueOutOfRange); // a bad declaration (U7, U16)
+    }
     final minU = min.toUnsigned();
     final maxU = max.toUnsigned();
     final bits = bitsRequired128(minU, maxU);
@@ -1096,23 +1269,65 @@ final class ReadStream implements BitStream {
     double max,
     double resolution,
   ) {
-    _compressedFloatParams(min, max, resolution);
+    if (!_compressedFloatParams(min, max, resolution)) {
+      return _refuse(Refusal.valueOutOfRange); // a bad declaration (U7, U16)
+    }
     final params = _floatParams;
-    if (_reader.wouldReadPastEnd(params.bits)) {
+    return _readCompressedFloat(
+      value,
+      params.maxIntegerValue,
+      params.bits,
+      params.delta,
+      params.min,
+    );
+  }
+
+  /// Reads a compressed float from precomputed wire constants, refusing as
+  /// value_out_of_range, before any bits move, constants that fail the
+  /// checks [compressedFloatParams]'s output always passes (IMPLEMENTING.md
+  /// U16): the step count in [1, 4294967040], [bits] its bit count, [delta]
+  /// positive and finite. Otherwise exactly [serializeCompressedFloat].
+  bool serializeCompressedFloatPrecomputed(
+    Ref<double> value,
+    int maxIntegerValue,
+    int bits,
+    double delta,
+    double min,
+  ) {
+    if (!_precomputedConstantsValid(maxIntegerValue, bits, delta)) {
+      return _refuse(Refusal.valueOutOfRange);
+    }
+    return _readCompressedFloat(
+      value,
+      maxIntegerValue,
+      bits,
+      fround(delta),
+      fround(min),
+    );
+  }
+
+  // The one home of the read-side decode, over constants already checked.
+  bool _readCompressedFloat(
+    Ref<double> value,
+    int maxIntegerValue,
+    int bits,
+    double delta,
+    double min,
+  ) {
+    if (_reader.wouldReadPastEnd(bits)) {
       return _refuse(Refusal.pastEnd);
     }
-    final integerValue = _reader.readBits(params.bits);
-    if (integerValue > params.maxIntegerValue) {
+    final integerValue = _reader.readBits(bits);
+    if (integerValue > maxIntegerValue) {
       return _refuse(Refusal.valueOutOfRange);
     }
     final normalized = fround(
-      fround(integerValue.toDouble()) /
-          fround(params.maxIntegerValue.toDouble()),
+      fround(integerValue.toDouble()) / fround(maxIntegerValue.toDouble()),
     );
     // the product must round to float32 BEFORE min is added: a fused decode
     // is one ulp off whenever min is non-zero
-    final scaled = fround(normalized * params.delta);
-    final decoded = fround(scaled + params.min);
+    final scaled = fround(normalized * delta);
+    final decoded = fround(scaled + min);
     // every operand is finite and the integer is in range, and still the
     // final add can round past the float32 maximum (STANDARD.md, "The decode
     // must be finite"): refused whatever the declaration, holder untouched
@@ -1152,6 +1367,12 @@ final class ReadStream implements BitStream {
   /// no normalization, no stripped byte order mark, no replacement. On
   /// refusal the holder is untouched.
   bool serializeString(Ref<String> value, int bufferSize) {
+    // IMPLEMENTING.md U7: a buffer size below 1 has no length range at all,
+    // and is refused, never asserted. One above 2^31 is refused by the length
+    // field's int32 bounds below (U5)
+    if (bufferSize < 1) {
+      return _refuse(Refusal.valueOutOfRange);
+    }
     final length = Ref<int>(0);
     if (!serializeInt(length, 0, bufferSize - 1)) {
       return false; // refused by the length field, which named the reason
@@ -1208,6 +1429,8 @@ final class ReadStream implements BitStream {
   /// state is consulted first, so a nested object refuses on a stream that
   /// has already failed, and a refusal inside the object propagates out of
   /// the composition rather than being swallowed by it, keeping its reason.
+  /// An object whose serialize returns false with nothing refused inside it
+  /// is its caller refusing, and latches [Refusal.rejected].
   bool serializeObject(Serializable object) {
     if (failed) {
       return false;
@@ -1215,9 +1438,9 @@ final class ReadStream implements BitStream {
     if (!object.serialize(this) || failed) {
       // the object's own serialize returned false, or an inner read latched a
       // failure that the callback ignored: latch the failure so it is
-      // terminal, keeping the reason of the read that refused, if any
-      _reader.poison();
-      return false;
+      // terminal, keeping the reason of the read that refused, or rejected
+      // when nothing did
+      return _refuse(Refusal.rejected);
     }
     return true;
   }
@@ -1263,7 +1486,9 @@ final class ReadStream implements BitStream {
   /// have taken, it is refused as [Refusal.nonCanonical], after the domain
   /// rule. The holder is untouched on refusal.
   bool serializeIntRelative(int previous, Ref<int> current) {
-    assert(previous >= 0 && previous <= intRelativeMax);
+    if (previous < 0 || previous > intRelativeMax) {
+      return _refuse(Refusal.valueOutOfRange); // a bad declaration (U16)
+    }
     if (_reader.wouldReadPastEnd(1)) {
       return _refuse(Refusal.pastEnd);
     }
@@ -1333,7 +1558,9 @@ final class ReadStream implements BitStream {
     int min,
     int max,
   ) {
-    _fixedPointParams(integerBits, fractionBits, min, max);
+    if (!_fixedPointParams(integerBits, fractionBits, min, max)) {
+      return _refuse(Refusal.valueOutOfRange); // a bad declaration (U16)
+    }
     final params = _fixedParams;
     if (min == max) {
       // degenerate range: the value IS the range, recovered from the range
@@ -1391,7 +1618,9 @@ final class ReadStream implements BitStream {
     int min,
     int max,
   ) {
-    _fixedPointParams128(integerBits, fractionBits, min, max);
+    if (!_fixedPointParams128(integerBits, fractionBits, min, max)) {
+      return _refuse(Refusal.valueOutOfRange); // a bad declaration (U16)
+    }
     final params = _fixedParams128;
     if (min == max) {
       // degenerate range: nothing is consumed, the value comes from min
@@ -1467,6 +1696,8 @@ final class MeasureStream implements BitStream {
 
   /// Measures a ranged 32-bit integer: exactly bitsRequired(min,max) bits.
   bool serializeInt(Ref<int> value, int min, int max) {
+    // IMPLEMENTING.md U5, as on write
+    assert(min >= _int32Min && max <= _int32Max, 'int bounds are int32');
     assert(min <= max);
     assert(value.value >= min);
     assert(value.value <= max);
@@ -1536,8 +1767,26 @@ final class MeasureStream implements BitStream {
     double max,
     double resolution,
   ) {
-    _compressedFloatParams(min, max, resolution);
+    final conforming = _compressedFloatParams(min, max, resolution);
+    assert(conforming, 'a non-conforming compressed_float declaration');
     _bitsWritten += _floatParams.bits;
+    return true;
+  }
+
+  /// Measures a compressed float from precomputed wire constants: exactly
+  /// [bits]. The constants are checked as on write.
+  bool serializeCompressedFloatPrecomputed(
+    Ref<double> value,
+    int maxIntegerValue,
+    int bits,
+    double delta,
+    double min,
+  ) {
+    assert(
+      _precomputedConstantsValid(maxIntegerValue, bits, delta),
+      'compressed_float constants compressedFloatParams does not derive',
+    );
+    _bitsWritten += bits;
     return true;
   }
 
@@ -1609,7 +1858,8 @@ final class MeasureStream implements BitStream {
     int min,
     int max,
   ) {
-    _fixedPointParams(integerBits, fractionBits, min, max);
+    final fits = _fixedPointParams(integerBits, fractionBits, min, max);
+    assert(fits, 'a fixed point declaration that does not fit its Q format');
     if (min == max) {
       assert(value.value == _fixedParams.rawMin);
       return true;
@@ -1632,7 +1882,8 @@ final class MeasureStream implements BitStream {
     int min,
     int max,
   ) {
-    _fixedPointParams128(integerBits, fractionBits, min, max);
+    final fits = _fixedPointParams128(integerBits, fractionBits, min, max);
+    assert(fits, 'a fixed point declaration that does not fit its Q format');
     if (min == max) {
       assert(value.value.toUnsigned() == _fixedParams128.rawMin);
       return true;
@@ -1644,6 +1895,13 @@ final class MeasureStream implements BitStream {
     _bitsWritten += _fixedParams128.bits;
     return true;
   }
+
+  /// A measure refuses nothing (IMPLEMENTING.md U6, U14): records nothing,
+  /// never throws, and returns false.
+  bool fail([Refusal? reason]) => false;
+
+  /// A measure refuses nothing: returns false, as [fail].
+  bool reject() => false;
 
   /// Always the worst case of 7 bits: the measurement is conservative
   /// because the number of align bits depends on where the message lands.

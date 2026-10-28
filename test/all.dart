@@ -21,6 +21,7 @@ import 'serialize_int_relative_test.dart' as serialize_int_relative;
 import 'serialize_int_test.dart' as serialize_int;
 import 'serialize_object_test.dart' as serialize_object;
 import 'terminality_test.dart' as terminality;
+import 'uniform_rules_test.dart' as uniform_rules;
 
 void main() {
   bits_required.run();
@@ -40,5 +41,6 @@ void main() {
   conformance_dirs.run();
   conformance.run();
   terminality.run();
+  uniform_rules.run();
   exit(summarize() > 0 ? 1 : 0);
 }

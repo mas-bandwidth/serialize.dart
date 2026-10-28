@@ -204,19 +204,19 @@ void run() {
     expectEquals(equal.refusal, Refusal.valueOutOfRange, 'refusal reason');
   });
 
-  test('serializeIntRelative: previous outside the domain is caller error', () {
+  test('serializeIntRelative: previous outside the domain', () {
+    // on read a bad declaration refuses as value_out_of_range in every build
+    // (IMPLEMENTING.md U7, U16); on write it is caller error, asserted
+    for (final previous in [1 << 31, -1]) {
+      final read = Ref<int>(5);
+      final reader = ReadStream(Uint8List(8));
+      expect(!reader.serializeIntRelative(previous, read), 'read $previous');
+      expectEquals(reader.refusal, Refusal.valueOutOfRange, 'reason');
+      expectEquals(read.value, 5, 'the holder is untouched');
+    }
     if (!assertsEnabled) {
       return; // release builds perform no write-side validation
     }
-    final read = Ref<int>(0);
-    expectThrows(
-      () => ReadStream(Uint8List(8)).serializeIntRelative(1 << 31, read),
-      'a previous of 2^31 is outside the domain',
-    );
-    expectThrows(
-      () => ReadStream(Uint8List(8)).serializeIntRelative(-1, read),
-      'a negative previous is outside the domain',
-    );
     expectThrows(
       () => WriteStream(
         Uint8List(8),

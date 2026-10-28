@@ -64,3 +64,9 @@ enum Refusal {
   @override
   String toString() => name;
 }
+
+/// The family wide name of [refusal], or `none` for no refusal: the
+/// refusal-name function of reference IMPLEMENTING.md U14, spelling exactly
+/// what STANDARD.md and the conformance corpus spell. [ReadStream.refusal] is
+/// null while nothing has been refused, and names `none` here.
+String refusalName(Refusal? refusal) => refusal?.name ?? 'none';

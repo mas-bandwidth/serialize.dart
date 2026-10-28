@@ -15,17 +15,20 @@
 //
 //  - dart2js makes Dart's int a JavaScript double, which would round 2^53 + 1
 //    and everything past it. The library does not compile there: dart2js
-//    refuses its 64-bit constants. The tool requires that refusal, so a change
-//    that let the library build for dart2js, and so round wide values in
-//    silence, turns this red instead.
+//    refuses the literal 2^63 - 1, the web guard `int64Max` in
+//    lib/src/bits.dart. The tool requires that refusal, by the guard's file
+//    and literal rather than by the compiler's wording, so a change that let
+//    the library build for dart2js, and so round wide values in silence,
+//    turns this red, and a reworded compiler message does not.
 //
 // Everything it writes goes under .dart_tool/web_conformance/.
 
 import 'dart:convert';
 import 'dart:io';
 
-/// The marker dart2js prints when a constant cannot be a JavaScript number.
-const String _jsRefusal = "can't be represented exactly in JavaScript";
+/// Where the web guard lives, and its literal: dart2js must refuse there.
+const String _guardFile = 'lib/src/bits.dart';
+const String _guardLiteral = '0x7FFFFFFFFFFFFFFF';
 
 String _entry(Map<String, String> corpus) {
   final buffer = StringBuffer()
@@ -145,18 +148,70 @@ Future<void> main() async {
       'double there: 64-bit values would round in silence',
     );
     failed = true;
-  } else if (!output.contains(_jsRefusal)) {
+  } else if (!output.contains(_guardFile) || !output.contains(_guardLiteral)) {
     stderr.writeln(
-      'web conformance: dart2js failed, but not by refusing a 64-bit '
-      'constant:\n$output',
+      'web conformance: dart2js failed, but not by refusing the web guard '
+      '$_guardLiteral in $_guardFile:\n$output',
     );
     failed = true;
   } else {
     print(
-      'web (dart2js): refused to build, every 64-bit constant is kept out '
-      'of a JavaScript double',
+      'web (dart2js): refused to build at the web guard in $_guardFile, so '
+      'no 64-bit value reaches a JavaScript double',
     );
   }
 
+  // the control: a copy of the library whose guard is computed rather than a
+  // literal must BUILD under dart2js, which the check above would turn red.
+  // A gate nobody has seen go red is a claim, not a measurement
+  final control = Directory('${work.path}/control')..createSync();
+  _copyTree(Directory('$root/lib'), Directory('${control.path}/lib'));
+  final guard = File('${control.path}/$_guardFile');
+  final guarded = guard.readAsStringSync();
+  final unguarded = guarded.replaceFirst(
+    'int64Max = $_guardLiteral;',
+    'int64Max = (1 << 62) - 1 + (1 << 62);',
+  );
+  if (unguarded == guarded) {
+    stderr.writeln('web conformance: control: no guard to remove');
+    failed = true;
+  } else {
+    guard.writeAsStringSync(unguarded);
+    final controlEntry = File('${control.path}/main.dart')
+      ..writeAsStringSync(
+        "import 'lib/serialize.dart';\n\n"
+        'void main() => print(WriteStream);\n',
+      );
+    final built = await Process.run(dart, [
+      'compile',
+      'js',
+      '-o',
+      '${control.path}/main.js',
+      controlEntry.path,
+    ], workingDirectory: root);
+    if (built.exitCode != 0) {
+      stderr.writeln(
+        'web conformance: control: without the guard dart2js still refused, '
+        'so the gate cannot tell the guard did the refusing:\n'
+        '${built.stdout}${built.stderr}',
+      );
+      failed = true;
+    } else {
+      print('web (dart2js) control: without the guard the library builds');
+    }
+  }
+
   exit(failed ? 1 : 0);
+}
+
+void _copyTree(Directory from, Directory to) {
+  to.createSync(recursive: true);
+  for (final entity in from.listSync()) {
+    final name = entity.uri.pathSegments.lastWhere((s) => s.isNotEmpty);
+    if (entity is Directory) {
+      _copyTree(entity, Directory('${to.path}/$name'));
+    } else if (entity is File) {
+      entity.copySync('${to.path}/$name');
+    }
+  }
 }

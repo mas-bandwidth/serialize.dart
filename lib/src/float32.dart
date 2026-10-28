@@ -43,6 +43,9 @@ final Float32List _f32 = Float32List(1);
 
 /// [value] rounded to the nearest float32, as a double: the float32 rounding
 /// boundary the compressed float arithmetic is pinned to.
+///
+/// A language necessity (IMPLEMENTING.md U15): Dart has no float32 type
+/// and no float bit casts, which the reference gets from C++ for free.
 @pragma('vm:prefer-inline')
 double fround(double value) {
   _f32[0] = value;
@@ -53,6 +56,9 @@ double fround(double value) {
 /// rounded to the nearest float32: exact for every finite float32 value. A
 /// NaN comes back quieted, as the hardware conversion produces it; the wire
 /// carries no NaN, so no caller of the format sees one.
+///
+/// A language necessity (IMPLEMENTING.md U15): Dart has no float32 type
+/// and no float bit casts, which the reference gets from C++ for free.
 @pragma('vm:prefer-inline')
 int float32BitsFromDouble(double value) {
   _scratch.setFloat32(0, value, Endian.host);
@@ -62,6 +68,9 @@ int float32BitsFromDouble(double value) {
 /// The double whose IEEE-754 single-precision representation is [bits]:
 /// exact for every finite pattern, negative zero and the subnormals
 /// included. A signaling NaN pattern comes back quieted.
+///
+/// A language necessity (IMPLEMENTING.md U15): Dart has no float32 type
+/// and no float bit casts, which the reference gets from C++ for free.
 @pragma('vm:prefer-inline')
 double doubleFromFloat32Bits(int bits) {
   _scratch.setUint32(0, bits, Endian.host);
@@ -82,6 +91,9 @@ bool float64BitsAreFinite(int bits) =>
 
 /// The 64 bits of the IEEE-754 double-precision representation of [value]:
 /// exactly the bits of the Dart double, no conversion at all.
+///
+/// A language necessity (IMPLEMENTING.md U15): Dart has no float32 type
+/// and no float bit casts, which the reference gets from C++ for free.
 @pragma('vm:prefer-inline')
 int float64BitsFromDouble(double value) {
   _scratch.setFloat64(0, value, Endian.host);
@@ -89,6 +101,9 @@ int float64BitsFromDouble(double value) {
 }
 
 /// The double whose IEEE-754 double-precision representation is [bits].
+///
+/// A language necessity (IMPLEMENTING.md U15): Dart has no float32 type
+/// and no float bit casts, which the reference gets from C++ for free.
 @pragma('vm:prefer-inline')
 double doubleFromFloat64Bits(int bits) {
   _scratch.setInt64(0, bits, Endian.host);

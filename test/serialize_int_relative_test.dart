@@ -11,6 +11,7 @@
 import 'dart:typed_data';
 
 import 'package:serialize/serialize.dart';
+import 'package:serialize/src/bits.dart' show intRelativeMax;
 
 import 'harness.dart';
 

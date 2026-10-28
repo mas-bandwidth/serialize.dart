@@ -11,6 +11,7 @@
 import 'dart:typed_data';
 
 import 'package:serialize/serialize.dart';
+import 'package:serialize/src/bits.dart' show intRelativeMax;
 
 import 'harness.dart';
 
@@ -242,7 +243,7 @@ void run() {
     expectEquals(refusalName(silent.refusal), 'rejected', 'never none');
   });
 
-  test('U6 and U9: fail and reject on write or measure return false', () {
+  test('U6 and U9: fail on write or measure returns false, never traps', () {
     final writer = WriteStream(Uint8List(8));
     writer.serializeBits(Ref<int>(5), 3);
     final measure = MeasureStream();
@@ -250,7 +251,6 @@ void run() {
     for (final BitStream stream in [writer, measure]) {
       expect(!stream.fail(Refusal.pastEnd), '$stream: fail is false');
       expect(!stream.fail(), '$stream: fail with no reason is false');
-      expect(!stream.reject(), '$stream: reject is false');
       expectEquals(stream.bitsProcessed, 3, '$stream: nothing recorded');
       expect(stream.serializeBits(Ref<int>(1), 1), '$stream: still writes');
     }

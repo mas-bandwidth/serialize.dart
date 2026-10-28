@@ -100,6 +100,11 @@ parameters). [USAGE.md](USAGE.md) teaches every operation by example.
 - **Nested objects**: `serializeObject` over a `Serializable` — inline
   composition that contributes no bytes of its own, with no framing,
   length prefix or alignment inserted around it.
+- **Write misuse traps**: every write and measure contract (ranges, bit
+  widths, finite floats, declarations, UTF-8 text, room) is an `assert`,
+  an `AssertionError` at the call under `--enable-asserts`, and never a
+  latched reason (reference IMPLEMENTING.md U9). `copyString` bounds text
+  to what a `serializeString` buffer size accepts.
 - **Range pricing**: `bitsRequired`, `bitsRequired64`, `bitsRequired128`,
   and `valueFitsInBits`, the write-side bound on a raw bit field.
 - **128-bit values**: `Int128` and `UInt128`, two's complement pairs of

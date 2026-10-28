@@ -42,7 +42,7 @@ dependencies:
   serialize:
     git:
       url: https://github.com/mas-bandwidth/serialize.dart.git
-      ref: v2.1.0
+      ref: v2.1.1
 ```
 
 ```dart

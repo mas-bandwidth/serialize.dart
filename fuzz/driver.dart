@@ -208,8 +208,8 @@ String xOf(List<int> b) {
 // on a read it starts at a sentinel that a refusal must leave in place under
 // both bit-complementary sentinel passes (alt = false vs true)
 
-const int sentinelA = 0x5a5a5a5a5a5a5a5a;
-const int sentinelB = -0x5a5a5a5a5a5a5a5b; // 0xa5a5a5a5a5a5a5a5 signed 64-bit
+const int sentinelA = 0x5a5a5a5a;
+const int sentinelB = -0x5a5a5a5b; // ~sentinelA: bit-complementary across all 64 bits
 const double sentinelFA = 1234.5;
 const double sentinelFB = -5678.25;
 const String sentinelSA = 'sentinel-5a';
@@ -217,7 +217,7 @@ const String sentinelSB = 'sentinel-a5';
 final Int128 sentinel128A = Int128(sentinelA, sentinelA);
 final Int128 sentinel128B = Int128(sentinelB, sentinelB);
 final UInt128 sentinelU128A = UInt128(sentinelA, sentinelA);
-final UInt128 sentinelU128B = UInt128(sentinelB, sentinelB);
+final UInt128 sentinelU128B = UInt128(0xa5a5a5a5, 0xa5a5a5a5);
 final bool sabotageHostileRead =
     Platform.environment['SERIALIZE_FUZZ_SABOTAGE'] == 'hostile-read';
 
@@ -233,8 +233,6 @@ final class Run {
   final List<String> vals;
   final bool alt;
   int? failed;
-  Refusal? firstRefusal;
-  int? refusedBits;
   bool touched = false;
   bool terminalityBroken = false;
 
@@ -245,7 +243,6 @@ final class Run {
 bool runOne(BitStream stream, Step s, int i, Run st) {
   final w = stream.isWriting;
   final alt = st.alt;
-  final alreadyFailed = !w && st.failed != null;
   bool ok;
   String out = '-';
   bool untouched = true;
@@ -357,28 +354,10 @@ bool runOne(BitStream stream, Step s, int i, Run st) {
     default:
       throw FormatException('driver: no runner for ${s.kind}');
   }
-  if (!w) {
-    if (alreadyFailed) {
-      if (ok ||
-          (stream as ReadStream).refusal != st.firstRefusal ||
-          stream.bitsProcessed != st.refusedBits) {
-        st.terminalityBroken = true;
-      }
-      if (!untouched) {
-        st.touched = true;
-      }
-    } else if (ok) {
-      st.vals[i] = out;
-    } else {
-      st.failed = i;
-      st.firstRefusal = (stream as ReadStream).refusal;
-      st.refusedBits = stream.bitsProcessed;
-      if (!untouched) {
-        st.touched = true;
-      }
-    }
-  } else if (ok) {
+  if (ok) {
     st.vals[i] = out;
+  } else if (!w && !untouched) {
+    st.touched = true;
   }
   return ok;
 }
@@ -391,53 +370,32 @@ final class Nested implements Serializable {
   Nested(this.st, this.from, this.to);
 
   @override
-  bool serialize(BitStream stream) {
-    final beforeFailed = st.failed;
-    final stop = runSteps(stream, st, from, to);
-    return beforeFailed == null && stop == to && st.failed == null;
-  }
+  bool serialize(BitStream stream) => runSteps(stream, st, from, to) == to;
 }
 
-// the steps [from, to) in order on one stream; on ReadStream continues
-// driving all remaining steps after a refusal to verify terminality and
-// sentinel preservation across every subsequent step in the program.
+// the steps [from, to) in order on one stream; returns the index of the
+// first refusing step (st.failed), or `to` (STANDARD.md object: a nested
+// object's steps run inline, no bytes of its own)
 int runSteps(BitStream stream, Run st, int from, int to) {
   var i = from;
   while (i < to) {
     final s = st.steps[i];
     if (s.kind == 'object') {
       st.vals[i] = '-';
-      final alreadyFailed = !stream.isWriting && st.failed != null;
-      final ok = stream.serializeObject(Nested(st, i + 1, i + 1 + s.width));
-      if (!ok) {
-        if (alreadyFailed) {
-          if ((stream as ReadStream).refusal != st.firstRefusal ||
-              stream.bitsProcessed != st.refusedBits) {
-            st.terminalityBroken = true;
-          }
-          runSteps(stream, st, i + 1, i + 1 + s.width);
-        } else {
-          st.failed ??= i;
-          st.firstRefusal ??= (stream as ReadStream).refusal;
-          st.refusedBits ??= stream.bitsProcessed;
-        }
-        if (stream.isWriting) {
-          return i;
-        }
-      } else if (alreadyFailed) {
-        st.terminalityBroken = true;
+      if (!stream.serializeObject(Nested(st, i + 1, i + 1 + s.width))) {
+        st.failed ??= i;
+        return i;
       }
       i += 1 + s.width;
       continue;
     }
     if (!runOne(stream, s, i, st)) {
-      if (stream.isWriting) {
-        return i;
-      }
+      st.failed ??= i;
+      return i;
     }
     i++;
   }
-  return st.failed ?? to;
+  return to;
 }
 
 // ---------------------------------------------------------------------------
@@ -495,8 +453,27 @@ void answer(StringBuffer out, String line) {
       out.write('$id r ok ${rs.bitsProcessed}');
     } else {
       n = st.failed!;
-      final firstRefusal = st.firstRefusal;
-      final refusedBits = st.refusedBits;
+      final firstRefusal = rs.refusal;
+      final refusedBits = rs.bitsProcessed;
+      for (var j = n + 1; j < steps.length; j++) {
+        final sj = steps[j];
+        if (sj.kind == 'object') {
+          if (rs.serializeObject(Nested(st, j + 1, j + 1 + sj.width)) ||
+              rsAlt.serializeObject(Nested(stAlt, j + 1, j + 1 + sj.width))) {
+            st.terminalityBroken = true;
+          }
+        } else {
+          if (runOne(rs, sj, j, st) || runOne(rsAlt, sj, j, stAlt)) {
+            st.terminalityBroken = true;
+          }
+        }
+        if (rs.refusal != firstRefusal ||
+            rsAlt.refusal != firstRefusal ||
+            rs.bitsProcessed != refusedBits ||
+            rsAlt.bitsProcessed != refusedBits) {
+          st.terminalityBroken = true;
+        }
+      }
       final postA = Ref<int>(sentinelInt(false));
       final postB = Ref<int>(sentinelInt(true));
       final postOkA = rs.serializeBits(postA, 1);

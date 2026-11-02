@@ -209,7 +209,8 @@ String xOf(List<int> b) {
 // both bit-complementary sentinel passes (alt = false vs true)
 
 const int sentinelA = 0x5a5a5a5a;
-const int sentinelB = -0x5a5a5a5b; // ~sentinelA: bit-complementary across all 64 bits
+const int sentinelB =
+    -0x5a5a5a5b; // ~sentinelA: bit-complementary across all 64 bits
 const double sentinelFA = 1234.5;
 const double sentinelFB = -5678.25;
 const String sentinelSA = 'sentinel-5a';

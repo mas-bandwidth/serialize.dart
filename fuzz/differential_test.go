@@ -879,7 +879,7 @@ func buildDriver(t *testing.T, root string) string {
 	return exe
 }
 
-func runDriver(t *testing.T, driver string, batch int, reqs []request) map[string][]string {
+func runDriver(t *testing.T, driver string, batch int, reqs []request, sabotageHostile bool) map[string][]string {
 	t.Helper()
 	dir := t.TempDir()
 	path := filepath.Join(dir, fmt.Sprintf("batch-%02d.txt", batch))
@@ -893,6 +893,9 @@ func runDriver(t *testing.T, driver string, batch int, reqs []request) map[strin
 	}
 	cmd := exec.Command(driver, path)
 	cmd.Dir = dir
+	if sabotageHostile {
+		cmd.Env = append(os.Environ(), "SERIALIZE_FUZZ_SABOTAGE=hostile-read")
+	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()
@@ -1137,7 +1140,7 @@ func runRound(t *testing.T, driver string, seed uint64, round int) bool {
 				reqs = append(reqs, request{id + "m", fmt.Sprintf("r %sm %s %s", id, hexBytes(p.mutant), p.text)})
 			}
 		}
-		out := runDriver(t, driver, b, reqs)
+		out := runDriver(t, driver, b, reqs, *sabotageHostileRead)
 		get := func(id string, n int) result {
 			f, ok := out[id]
 			if !ok {
@@ -1197,9 +1200,6 @@ func runRound(t *testing.T, driver string, seed uint64, round int) bool {
 				goM := goRead(p.steps, p.mutant)
 				if !goM.ok {
 					mutantRefusals++
-				}
-				if *sabotageHostileRead && !dartM.ok {
-					dartM.kind = "touched:" + dartM.kind
 				}
 				add(compareReads(p, "mutant ("+p.mutation+")", p.mutant, goM, dartM))
 			}
@@ -1262,10 +1262,13 @@ func runRound(t *testing.T, driver string, seed uint64, round int) bool {
 			t.Logf("round %d negative control: the int range widened by one bit went red on %d of %d programs with a widenable int; the first:\n%s", round, red, eligible, first)
 		}
 
-		// Hostile-read refusal / sentinel negative control: verify that a refused
-		// mutant whose destination was touched or whose terminality broke goes red
-		// through compareReads.
-		hostileRed, hostileEligible := 0, 0
+		// Hostile-read refusal / sentinel negative control: run the native Dart
+		// driver with SERIALIZE_FUZZ_SABOTAGE=hostile-read over refused mutants
+		// and verify that its destination-sentinel check reports touched:<kind>
+		// and goes red through compareReads.
+		var hostileReqs []request
+		var hostileProgs []*program
+		var hostileGo []result
 		for _, p := range progs {
 			if p.mutant == nil {
 				continue
@@ -1274,19 +1277,32 @@ func runRound(t *testing.T, driver string, seed uint64, round int) bool {
 			if goM.ok {
 				continue
 			}
-			hostileEligible++
-			touchedM := goM
-			touchedM.kind = "touched:" + goM.kind
-			temM := goM
-			temM.kind = "terminality:" + goM.kind
-			if compareReads(p, "mutant ("+p.mutation+")", p.mutant, goM, touchedM) != "" &&
-				compareReads(p, "mutant ("+p.mutation+")", p.mutant, goM, temM) != "" {
-				hostileRed++
+			id := strconv.Itoa(p.n) + "hm"
+			hostileReqs = append(hostileReqs, request{id, fmt.Sprintf("r %s %s %s", id, hexBytes(p.mutant), p.text)})
+			hostileProgs = append(hostileProgs, p)
+			hostileGo = append(hostileGo, goM)
+			if len(hostileReqs) >= 32 {
+				break
+			}
+		}
+		hostileRed, hostileEligible := 0, len(hostileReqs)
+		if hostileEligible > 0 {
+			hOut := runDriver(t, driver, -1, hostileReqs, true)
+			for idx, p := range hostileProgs {
+				id := hostileReqs[idx].id
+				dartH, err := parseResult(hOut[id], len(p.steps))
+				if err != nil {
+					t.Fatalf("round %d hostile-read control request %s: %v", round, id, err)
+				}
+				if strings.HasPrefix(dartH.kind, "touched:") &&
+					compareReads(p, "mutant ("+p.mutation+")", p.mutant, hostileGo[idx], dartH) != "" {
+					hostileRed++
+				}
 			}
 		}
 		if hostileEligible == 0 || hostileRed != hostileEligible {
 			controlRed = true
-			t.Errorf("round %d hostile-read negative control: %d of %d refused mutants went red", round, hostileRed, hostileEligible)
+			t.Errorf("round %d hostile-read negative control: %d of %d refused mutants went red via native driver", round, hostileRed, hostileEligible)
 		}
 	}
 	return len(disagreements) > 0 || controlRed

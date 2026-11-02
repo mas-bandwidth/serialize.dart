@@ -26,9 +26,11 @@
 //                                               and the values decoded before
 //
 // <kind> is the stream's first refusal reason, spelled as STANDARD.md spells
-// it (format 2.0, Refusal reasons). A refused read whose destination was
-// written answers kind `touched:<kind>`, so the differential goes red on it
-// (a refusal leaves the caller's destination untouched).
+// it (format 2.0, Refusal reasons). Every read request runs twice with
+// bit-complementary sentinels (0x5a and 0xa5, including bool false and true);
+// a refused read whose destination was written answers kind `touched:<kind>`,
+// and a refused stream that fails post-refusal terminality answers
+// `terminality:<kind>`, so the differential goes red on either.
 //
 // THE PROGRAM TEXT: steps one after another, each `<kind> <params> <value>`;
 // a number is 32 hex digits, the 128-bit two's complement (signed kinds sign
@@ -203,25 +205,41 @@ String xOf(List<int> b) {
 
 // ---------------------------------------------------------------------------
 // one step on any stream: the holder carries the program's value on a write;
-// on a read it starts at a sentinel that a refusal must leave in place
+// on a read it starts at a sentinel that a refusal must leave in place under
+// both bit-complementary sentinel passes (alt = false vs true)
 
-const int sentinel = 0x5a5a5a5a;
-const double sentinelF = 1234.5;
-const String sentinelS = 'sentinel';
-final Int128 sentinel128 = Int128(sentinel, sentinel);
-final UInt128 sentinelU128 = UInt128(sentinel, sentinel);
+const int sentinelA = 0x5a5a5a5a;
+const int sentinelB = -0x5a5a5a5b; // 0xa5a5a5a5 signed 32-bit
+const double sentinelFA = 1234.5;
+const double sentinelFB = -5678.25;
+const String sentinelSA = 'sentinel-5a';
+const String sentinelSB = 'sentinel-a5';
+final Int128 sentinel128A = Int128(sentinelA, sentinelA);
+final Int128 sentinel128B = Int128(sentinelB, sentinelB);
+final UInt128 sentinelU128A = UInt128(sentinelA, sentinelA);
+final UInt128 sentinelU128B = UInt128(0xa5a5a5a5, 0xa5a5a5a5);
+
+int sentinelInt(bool alt) => alt ? sentinelB : sentinelA;
+double sentinelFloat(bool alt) => alt ? sentinelFB : sentinelFA;
+String sentinelString(bool alt) => alt ? sentinelSB : sentinelSA;
+Int128 sentinelInt128(bool alt) => alt ? sentinel128B : sentinel128A;
+UInt128 sentinelUint128(bool alt) => alt ? sentinelU128B : sentinelU128A;
+int sentinelByte(bool alt) => alt ? 0x5a : 0xa5;
 
 final class Run {
   final List<Step> steps;
   final List<String> vals;
+  final bool alt;
   int? failed;
   bool touched = false;
 
-  Run(this.steps) : vals = List<String>.filled(steps.length, '-');
+  Run(this.steps, {this.alt = false})
+    : vals = List<String>.filled(steps.length, '-');
 }
 
 bool runOne(BitStream stream, Step s, int i, Run st) {
   final w = stream.isWriting;
+  final alt = st.alt;
   bool ok;
   String out = '-';
   bool untouched = true;
@@ -237,7 +255,8 @@ bool runOne(BitStream stream, Step s, int i, Run st) {
         'fixed64' ||
         'int_relative':
       final signed = s.kind == 'int' || s.kind == 'int_relative';
-      final h = Ref<int>(w ? (signed ? signed32(s.v.lo) : s.v.lo) : sentinel);
+      final init = sentinelInt(alt);
+      final h = Ref<int>(w ? (signed ? signed32(s.v.lo) : s.v.lo) : init);
       ok = switch (s.kind) {
         'bits' => stream.serializeBits(h, s.width),
         'bits64' => stream.serializeBits64(h, s.width),
@@ -252,48 +271,55 @@ bool runOne(BitStream stream, Step s, int i, Run st) {
       };
       final isSigned = signed || s.kind == 'int64' || s.kind == 'fixed64';
       out = isSigned ? signedN(h.value) : unsignedN(h.value);
-      untouched = h.value == sentinel;
+      untouched = h.value == init;
     case 'bool':
-      // a bool holder has no value to spare for a sentinel
-      final h = Ref<bool>(w && s.b);
+      final init = alt;
+      final h = Ref<bool>(w ? s.b : init);
       ok = stream.serializeBool(h);
       out = h.value ? '1' : '0';
+      untouched = h.value == init;
     case 'uint128':
-      final h = Ref<UInt128>(w ? s.v : sentinelU128);
+      final init = sentinelUint128(alt);
+      final h = Ref<UInt128>(w ? s.v : init);
       ok = stream.serializeUint128(h);
       out = n128(h.value.hi, h.value.lo);
-      untouched = h.value == sentinelU128;
+      untouched = h.value == init;
     case 'int128' || 'fixed128':
-      final h = Ref<Int128>(w ? s.v.toSigned() : sentinel128);
+      final init = sentinelInt128(alt);
+      final h = Ref<Int128>(w ? s.v.toSigned() : init);
       ok = s.kind == 'int128'
           ? stream.serializeInt128(h, s.min.toSigned(), s.max.toSigned())
           : stream.serializeFixed128(h, s.ib, s.fb, s.min.lo, s.max.lo);
       out = n128(h.value.hi, h.value.lo);
-      untouched = h.value == sentinel128;
+      untouched = h.value == init;
     case 'float' || 'cfloat':
-      final h = Ref<double>(w ? doubleFromFloat32Bits(s.v.lo) : sentinelF);
+      final init = sentinelFloat(alt);
+      final h = Ref<double>(w ? doubleFromFloat32Bits(s.v.lo) : init);
       ok = s.kind == 'float'
           ? stream.serializeFloat(h)
           : stream.serializeCompressedFloat(h, s.fmin, s.fmax, s.fres);
       out = unsignedN(float32BitsFromDouble(h.value));
-      untouched = h.value == sentinelF;
+      untouched = h.value == init;
     case 'double':
-      final h = Ref<double>(w ? doubleFromFloat64Bits(s.v.lo) : sentinelF);
+      final init = sentinelFloat(alt);
+      final h = Ref<double>(w ? doubleFromFloat64Bits(s.v.lo) : init);
       ok = stream.serializeDouble(h);
       out = unsignedN(float64BitsFromDouble(h.value));
-      untouched = h.value == sentinelF;
+      untouched = h.value == init;
     case 'bytes':
+      final fill = sentinelByte(alt);
       final data = w
           ? Uint8List.fromList(s.data)
-          : (Uint8List(s.data.length)..fillRange(0, s.data.length, 0xa5));
+          : (Uint8List(s.data.length)..fillRange(0, s.data.length, fill));
       ok = stream.serializeBytes(data);
       out = xOf(data);
-      untouched = data.every((c) => c == 0xa5);
+      untouched = data.every((c) => c == fill);
     case 'string':
-      final h = Ref<String>(w ? textOf(s.data) : sentinelS);
+      final init = sentinelString(alt);
+      final h = Ref<String>(w ? textOf(s.data) : init);
       ok = stream.serializeString(h, s.width);
       out = xOf(utf8.encode(h.value));
-      untouched = h.value == sentinelS;
+      untouched = h.value == init;
     case 'align':
       ok = stream.serializeAlign();
     case 'end':
@@ -356,7 +382,10 @@ void answer(StringBuffer out, String line) {
     final capacity = t.dec();
     final steps = parseSteps(t);
     final st = Run(steps);
-    final ws = WriteStream(Uint8List(capacity));
+    const canaryBytes = 16;
+    final backing = Uint8List(capacity + canaryBytes)
+      ..fillRange(capacity, capacity + canaryBytes, 0xaa);
+    final ws = WriteStream(Uint8List.sublistView(backing, 0, capacity));
     if (runSteps(ws, st, 0, steps.length) != steps.length) {
       // a WriteStream refuses nothing (writes are trusted): a false return
       // here is a defect of its own, reported as such
@@ -364,6 +393,12 @@ void answer(StringBuffer out, String line) {
       return;
     }
     ws.flush();
+    for (var k = 0; k < canaryBytes; k++) {
+      if (backing[capacity + k] != 0xaa) {
+        out.writeln('$id w refused 0 canary_corrupted');
+        return;
+      }
+    }
     final ms = MeasureStream();
     final mt = Run(steps);
     runSteps(ms, mt, 0, steps.length);
@@ -376,15 +411,49 @@ void answer(StringBuffer out, String line) {
     final st = Run(steps);
     final rs = ReadStream(data);
     final stop = runSteps(rs, st, 0, steps.length);
+
+    final stAlt = Run(steps, alt: true);
+    final rsAlt = ReadStream(data);
+    final stopAlt = runSteps(rsAlt, stAlt, 0, steps.length);
+    if (stop != stopAlt ||
+        rs.bitsProcessed != rsAlt.bitsProcessed ||
+        rs.refusal != rsAlt.refusal) {
+      throw StateError('driver: two-sentinel read passes disagreed on $id');
+    }
+
     var n = steps.length;
     if (stop == steps.length) {
       out.write('$id r ok ${rs.bitsProcessed}');
     } else {
       n = st.failed!;
-      final kind = rs.refusal?.name ?? 'none';
-      out.write('$id r refused $n ${st.touched ? 'touched:$kind' : kind}');
+      final firstRefusal = rs.refusal;
+      final refusedBits = rs.bitsProcessed;
+      final postA = Ref<int>(sentinelInt(false));
+      final postB = Ref<int>(sentinelInt(true));
+      final postOkA = rs.serializeBits(postA, 1);
+      final postOkB = rsAlt.serializeBits(postB, 1);
+      final terminalityBroken =
+          postOkA ||
+          postOkB ||
+          rs.refusal != firstRefusal ||
+          rsAlt.refusal != firstRefusal ||
+          rs.bitsProcessed != refusedBits ||
+          rsAlt.bitsProcessed != refusedBits;
+      final touched =
+          st.touched ||
+          stAlt.touched ||
+          postA.value != sentinelInt(false) ||
+          postB.value != sentinelInt(true);
+      final kind = firstRefusal?.name ?? 'none';
+      final reported = touched
+          ? 'touched:$kind'
+          : (terminalityBroken ? 'terminality:$kind' : kind);
+      out.write('$id r refused $n $reported');
     }
     for (var j = 0; j < n; j++) {
+      if (st.vals[j] != stAlt.vals[j]) {
+        throw StateError('driver: two-sentinel read values disagreed on $id');
+      }
       out.write(' ${st.vals[j]}');
     }
     out.writeln();

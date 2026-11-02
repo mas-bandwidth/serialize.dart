@@ -67,6 +67,8 @@ import (
 var (
 	sabotageWidenInt = flag.Bool("sabotage-widen-int", false,
 		"test only: the Go writer writes every non-degenerate int range one bit wider, so the differential must go red")
+	sabotageHostileRead = flag.Bool("sabotage-hostile-read", false,
+		"test only: refused mutant reads report touched destinations, so the hostile-read differential must go red")
 	seedFlag = flag.Uint64("seed", 0x5e7a11a15e7a11a1,
 		"the generator seed; round r draws from PCG(seed, r)")
 	durationFlag = flag.Duration("duration", 0,
@@ -1045,7 +1047,7 @@ func TestDifferentialAgainstSerializeGo(t *testing.T) {
 				round, *seedFlag, *seedFlag, round)
 			break
 		}
-		if *sabotageWidenInt || *durationFlag <= 0 {
+		if *sabotageWidenInt || *sabotageHostileRead || *durationFlag <= 0 {
 			break
 		}
 		// stop before a round that would overrun the budget
@@ -1196,6 +1198,9 @@ func runRound(t *testing.T, driver string, seed uint64, round int) bool {
 				if !goM.ok {
 					mutantRefusals++
 				}
+				if *sabotageHostileRead && !dartM.ok {
+					dartM.kind = "touched:" + dartM.kind
+				}
 				add(compareReads(p, "mutant ("+p.mutation+")", p.mutant, goM, dartM))
 			}
 		}
@@ -1222,7 +1227,7 @@ func runRound(t *testing.T, driver string, seed uint64, round int) bool {
 	// Go writer that widens each int range by one bit, through the same
 	// comparison, must go red.
 	controlRed := false
-	if !*sabotageWidenInt {
+	if !*sabotageWidenInt && !*sabotageHostileRead {
 		red, eligible := 0, 0
 		first := ""
 		for _, p := range progs {
@@ -1255,6 +1260,33 @@ func runRound(t *testing.T, driver string, seed uint64, round int) bool {
 			t.Errorf("round %d negative control: the int range widened by one bit went green on all %d programs with a widenable int", round, eligible)
 		} else if round == *roundsFrom {
 			t.Logf("round %d negative control: the int range widened by one bit went red on %d of %d programs with a widenable int; the first:\n%s", round, red, eligible, first)
+		}
+
+		// Hostile-read refusal / sentinel negative control: verify that a refused
+		// mutant whose destination was touched or whose terminality broke goes red
+		// through compareReads.
+		hostileRed, hostileEligible := 0, 0
+		for _, p := range progs {
+			if p.mutant == nil {
+				continue
+			}
+			goM := goRead(p.steps, p.mutant)
+			if goM.ok {
+				continue
+			}
+			hostileEligible++
+			touchedM := goM
+			touchedM.kind = "touched:" + goM.kind
+			temM := goM
+			temM.kind = "terminality:" + goM.kind
+			if compareReads(p, "mutant ("+p.mutation+")", p.mutant, goM, touchedM) != "" &&
+				compareReads(p, "mutant ("+p.mutation+")", p.mutant, goM, temM) != "" {
+				hostileRed++
+			}
+		}
+		if hostileEligible == 0 || hostileRed != hostileEligible {
+			controlRed = true
+			t.Errorf("round %d hostile-read negative control: %d of %d refused mutants went red", round, hostileRed, hostileEligible)
 		}
 	}
 	return len(disagreements) > 0 || controlRed

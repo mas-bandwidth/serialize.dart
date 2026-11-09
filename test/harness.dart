@@ -43,13 +43,17 @@ bool get assertsEnabled {
   return enabled;
 }
 
-/// Fails unless [body] throws. For checked-build contract violations: guard
-/// the call with [assertsEnabled], because a release build performs no
-/// write-side validation and nothing throws.
+/// Fails unless [body] throws an [AssertionError]. For checked-build contract
+/// violations: guard the call with [assertsEnabled], because a release build
+/// performs no write-side validation and nothing throws.
 void expectThrows(void Function() body, String message) {
   try {
     body();
-  } catch (_) {
+  } on AssertionError {
+    return;
+  } catch (error) {
+    _failed++;
+    print('FAIL $_current: $message: threw $error instead of AssertionError');
     return;
   }
   _failed++;

@@ -157,6 +157,15 @@ void run() {
     expectEquals(aligned.bitsRead, 0, 'no bits consumed');
   });
 
+  test('reader: readAlign after poison refuses without reading', () {
+    final reader = BitReader(Uint8List.fromList(const [0x05, 0xAA]));
+    reader.readBits(3);
+    reader.poison();
+    final poisoned = reader.bitsRead;
+    expect(!reader.readAlign(), 'poisoned align refused');
+    expectEquals(reader.bitsRead, poisoned, 'no bits consumed');
+  });
+
   test('round trip: mixed widths across several words', () {
     final buffer = Uint8List(64);
     final writer = BitWriter(buffer);

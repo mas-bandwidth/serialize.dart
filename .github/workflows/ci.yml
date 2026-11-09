@@ -17,6 +17,17 @@ jobs:
       - run: dart run test/all.dart
       - run: dart --enable-asserts run test/all.dart
 
+      # The same corpus in the compilation mode a production Flutter/Dart
+      # native release ships: a whole-program native AOT executable from
+      # `dart compile exe`, where asserts are compiled out and the optimizer
+      # sees every call site. The two steps above run the JIT; this is the
+      # release build, and it has to pass too.
+      - name: The corpus passes as a native AOT release executable
+        run: |
+          mkdir -p build
+          dart compile exe test/all.dart -o build/test_all
+          ./build/test_all
+
       # The negative controls: a reader with one refusal rule deleted must
       # fail exactly the vectors conformance-controls/<rule>.expected names,
       # once per rule, and a vector whose operation has no runner must go red.

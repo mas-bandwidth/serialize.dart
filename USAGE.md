@@ -132,11 +132,11 @@ same declarations are caller error, asserted in the checked build.
 **A refused read leaves its destination unwritten.** The `Ref` holder you
 passed still holds exactly what it held before the call, so a caller that
 trusts the holder over the return code is never handed a value the stream
-did not carry. Two things the rule does not reach: `serializeBytes` and
-`serializeString` read into a buffer you own, and its contents after a
-refusal are unspecified; and a sequence of reads over
-an object or an array may leave earlier members written, because the rule
-is per primitive read.
+did not carry. On a refused string read the caller's `Ref<String>`
+holder is left untouched. One exception: `serializeBytes` reads into
+a buffer you own, whose contents after a refusal are unspecified; and
+a sequence of reads over an object or an array may leave earlier
+members written, because the rule is per primitive read.
 
 **A failure is terminal.** Nothing after the failing operation has a
 defined position, so the stream latches: `failed` becomes true, and every
@@ -481,8 +481,8 @@ every read, an end on a failed stream refuses with the first reason.
 `serializeIntRelative(previous, ref)` prices strictly increasing
 sequences — sequence numbers, ack chains. `current > previous` always, no
 wrapping. A difference of 1 costs a single bit; small differences ride
-payload tiers of 5/8/13/18/23 bits; past the ladder, six zero flags carry
-`current` itself as 32 raw bits.
+payload tiers of 3/5/9/13/17 bits (5/8/13/18/23 bits total with flags);
+past the ladder, six zero flags carry `current` itself as 32 raw bits.
 
 **The domain is 0 to 2^31 - 1 inclusive**, for both
 `previous` and `current`. It belongs to the operation, not to Dart's int:

@@ -173,6 +173,30 @@ void run() {
     }
   });
 
+  test('U9: a multi-group write past the end traps before its first group', () {
+    // 32 bits left: room for the low group only, never the whole operation
+    final cases = <String, bool Function(WriteStream)>{
+      'bits64': (w) => w.serializeBits64(Ref<int>(0), 64),
+      'uint64': (w) => w.serializeUint64(Ref<int>(0)),
+      'int64': (w) => w.serializeInt64(Ref<int>(0), 0, 1 << 40),
+      'uint128': (w) => w.serializeUint128(Ref<UInt128>(UInt128.zero)),
+      'int128': (w) => w.serializeInt128(
+        Ref<Int128>(Int128.zero),
+        Int128.zero,
+        Int128.fromInt(1 << 40),
+      ),
+      'double': (w) => w.serializeDouble(Ref<double>(1.5)),
+      'fixed64': (w) => w.serializeFixed(Ref<int>(0), 32, 32, -1, 1),
+      'fixed128': (w) =>
+          w.serializeFixed128(Ref<Int128>(Int128.zero), 64, 64, -1, 1),
+    };
+    cases.forEach((what, write) {
+      final writer = WriteStream(Uint8List(8));
+      writer.serializeBits(Ref<int>(0), 32);
+      _expectTrap(what, writer, () => write(writer));
+    });
+  });
+
   test('U9: write misuse never latches', () {
     if (!assertsEnabled) {
       return;

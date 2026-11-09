@@ -301,8 +301,10 @@ final class BitReader {
   bool readAlign() {
     final remainderBits = _bitsRead % 8;
     if (remainderBits != 0) {
-      // this cannot read past the end: numBits is a multiple of 8, so an
-      // unaligned bit index is always strictly inside the final byte
+      // a poisoned reader sits past the end, unaligned: refuse it
+      if (wouldReadPastEnd(8 - remainderBits)) {
+        return false;
+      }
       final value = readBits(8 - remainderBits);
       assert(_bitsRead % 8 == 0);
       if (value != 0) {

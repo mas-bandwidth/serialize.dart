@@ -26,8 +26,24 @@ const Set<String> _allowed = {
   'doubleFromFloat32Bits', 'doubleFromFloat64Bits', 'Ref',
 };
 
+bool _matchesExpectedExports(Set<String> shown) =>
+    shown.difference(_allowed).isEmpty &&
+    _allowed.difference(shown).isEmpty;
+
 void run() {
-  test('U15: lib/serialize.dart exports nothing beyond the ruling', () {
+  test('U15: export set comparison checks every expected symbol', () {
+    expect(_matchesExpectedExports(_allowed), 'accept the complete export set');
+    for (final name in _allowed) {
+      final missing = {..._allowed}..remove(name);
+      expect(!_matchesExpectedExports(missing), 'require export $name');
+    }
+    expect(
+      !_matchesExpectedExports({..._allowed, 'unexpectedExport'}),
+      'reject an additional export',
+    );
+  });
+
+  test('U15: lib/serialize.dart exports exactly the ruling', () {
     final source = File('lib/serialize.dart').readAsStringSync();
     final shown = <String>{};
     for (final match in RegExp(r'show([^;]*);').allMatches(source)) {
@@ -37,7 +53,11 @@ void run() {
     }
     expect(shown.isNotEmpty, 'found the show lists');
     final extra = shown.difference(_allowed);
-    expect(extra.isEmpty, 'exports beyond U15: $extra');
+    final missing = _allowed.difference(shown);
+    expect(
+      _matchesExpectedExports(shown),
+      'exports differ from U15: extra $extra, missing $missing',
+    );
     expect(
       !RegExp(r"export '[^']*';").hasMatch(source),
       'every export names what it shows',

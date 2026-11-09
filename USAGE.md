@@ -169,8 +169,8 @@ On the write side there is one misuse mechanism, the trap (reference
 IMPLEMENTING.md U9), and in Dart the trap is `assert`. Caller contracts
 (bit counts in range, values within their declared ranges, `serializeInt` bounds within int32, min ≤ max,
 well-formed string payloads, buffers whose length is a multiple of 8
-bytes, room in the buffer for the whole of a `bytes` or `string` before
-any of it is written, finite `float`, `double` and `compressed_float`
+bytes, room in the buffer for the whole of a `bytes`, `string` or
+multi-group 64- or 128-bit write before any of it is written, finite `float`, `double` and `compressed_float`
 values, `reject()` only on a read) are `assert` statements, the Dart form
 of the family's debug asserts. A `MeasureStream` makes every check a
 `WriteStream` makes except room and buffer size (U6). Write misuse never

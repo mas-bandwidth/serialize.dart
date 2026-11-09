@@ -51,6 +51,23 @@ jobs:
       - name: Float/double write-then-read fuzz on the web target
         run: dart run tool/web_float_fuzz.dart 1 1000000
 
+  # The SDK floor: pubspec.yaml (sdk: ^3.9.0) and README.md state Dart
+  # SDK 3.9 or newer, while every other job pins 3.13.2. This job runs the
+  # test suite on the stated minimum (3.9.0), so the floor is measured
+  # rather than asserted. Keep its sdk in sync with the pubspec floor.
+  sdk-floor:
+    name: test (Dart SDK floor 3.9.0)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: 3.9.0
+      - run: dart pub get
+      - run: dart analyze --fatal-infos --fatal-warnings
+      - run: dart run test/all.dart
+      - run: dart --enable-asserts run test/all.dart
+
   # The fuzz smoke: the C++ reference runs libFuzzer for 60 s on every push;
   # Dart has no native coverage-guided fuzzer, so this port runs the family's
   # differential instead (fuzz/differential_test.go, as serialize.lua,

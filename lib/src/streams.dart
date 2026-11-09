@@ -574,6 +574,7 @@ final class WriteStream implements BitStream {
   bool serializeBits64(Ref<int> value, int bits) {
     assert(bits >= 1 && bits <= 64);
     assert(valueFitsInBits(value.value, bits));
+    assert(bits <= _writer.bitsAvailable);
     if (bits <= 32) {
       _writer.writeBits(value.value, bits);
     } else {
@@ -615,6 +616,7 @@ final class WriteStream implements BitStream {
     if (bits == 0) {
       return true; // degenerate range: the value IS the range, nothing to send
     }
+    assert(bits <= _writer.bitsAvailable);
     // subtract in the unsigned domain: wraps when the range is wider than 2^63
     final unsignedValue = value.value - min;
     if (bits <= 32) {
@@ -651,6 +653,7 @@ final class WriteStream implements BitStream {
   void _writeGroups(UInt128 offset, int bits) {
     // 32-bit groups, least significant first: the same convention as
     // serialize_bits, serialize_uint64 and the wide fixed point path
+    assert(bits <= _writer.bitsAvailable);
     final group0 = offset.lo & 0xFFFFFFFF;
     final group1 = offset.lo >>> 32;
     final group2 = offset.hi & 0xFFFFFFFF;
@@ -688,6 +691,7 @@ final class WriteStream implements BitStream {
   /// Writes an unsigned 128-bit integer: 128 raw bits, the low 64-bit half
   /// first, then the high half, each as serialize_bits(half, 64).
   bool serializeUint128(Ref<UInt128> value) {
+    assert(128 <= _writer.bitsAvailable);
     _writer.writeBits(value.value.lo & 0xFFFFFFFF, 32);
     _writer.writeBits(value.value.lo >>> 32, 32);
     _writer.writeBits(value.value.hi & 0xFFFFFFFF, 32);
@@ -720,6 +724,7 @@ final class WriteStream implements BitStream {
   bool serializeDouble(Ref<double> value) {
     final bits = float64BitsFromDouble(value.value);
     assert(float64BitsAreFinite(bits));
+    assert(64 <= _writer.bitsAvailable);
     _writer.writeBits(bits & 0xFFFFFFFF, 32);
     _writer.writeBits(bits >>> 32, 32);
     return true;
@@ -921,6 +926,7 @@ final class WriteStream implements BitStream {
     final offset = value.value - params.rawMin;
     assert(!unsignedGreaterThan(offset, params.rawRange));
     final bits = params.bits;
+    assert(bits <= _writer.bitsAvailable);
     if (bits <= 32) {
       _writer.writeBits(offset, bits);
     } else {

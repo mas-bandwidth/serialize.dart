@@ -1,6 +1,6 @@
 name: nightly conformance
 
-# A functional test, nightly, on our own fleet: this port held to the CURRENT
+# A functional test, nightly: this port held to the CURRENT
 # C/C++ data in mas-bandwidth/serialize, not only to the copy vendored here.
 #
 # CI on push proves the port against its vendored conformance/ and
@@ -41,7 +41,7 @@ concurrency:
 
 jobs:
   conformance:
-    name: port vs mas-bandwidth/serialize main, on the fleet
+    name: port vs mas-bandwidth/serialize main
     runs-on: [self-hosted, Linux, X64, nightly]
     timeout-minutes: 30
     steps:

@@ -797,7 +797,7 @@ final class WriteStream implements BitStream {
     // fused or widened arithmetic changes the wire.
     final scaled = fround(normalized * fround(maxIntegerValue.toDouble()));
     var integerValue = fround(scaled + 0.5).floor();
-    // STANDARD.md: the integer clamp is normative (2026-08-23, schema#109).
+    // STANDARD.md: the integer clamp is normative.
     // Once maxIntegerValue >= 2^23 the float32 ulp at the top of the range
     // reaches 1, so the rounded sum can exceed maxIntegerValue itself.
     if (integerValue > maxIntegerValue) {

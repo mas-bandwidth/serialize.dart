@@ -1030,6 +1030,9 @@ func TestDifferentialAgainstSerializeGo(t *testing.T) {
 		t.Fatalf("-programs %d: a round has at least one program", *programsFlag)
 	}
 	driver := buildDriver(t, root)
+	if !*sabotageWidenInt {
+		checkLeadingByteOrderMarks(t, driver)
+	}
 
 	t.Logf("seed %#x, programs per round %d, duration %v, first round %d (replay a red round with -seed %#x -rounds-from R -duration 0)",
 		*seedFlag, *programsFlag, *durationFlag, *roundsFrom, *seedFlag)
@@ -1315,4 +1318,49 @@ func mutate(g *gen, b []byte) ([]byte, string) {
 		m = append(m, byte(g.r.Uint32()))
 	}
 	return m, fmt.Sprintf("extended by %d bytes", n)
+}
+
+func TestDriverLeadingByteOrderMark(t *testing.T) {
+	root, err := filepath.Abs("..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	driver := buildDriver(t, root)
+	checkLeadingByteOrderMarks(t, driver)
+}
+
+func checkLeadingByteOrderMarks(t *testing.T, driver string) {
+	t.Helper()
+	for i, s := range []string{"\uFEFF", "\uFEFFa", "\uFEFF\uFEFF", "\uFEFF\uFEFFa"} {
+		steps := []step{
+			{kind: "string", width: 32, data: []byte(s)},
+			{kind: "end"},
+		}
+		p := &program{n: i, steps: steps, text: programText(steps)}
+		p.goW = goWrite(steps, writeCap, false)
+		if !p.goW.ok {
+			t.Fatalf("%s: serialize.go write failed", p.header())
+		}
+		id := strconv.Itoa(i)
+		reqs := []request{
+			{id + "w", fmt.Sprintf("w %sw %d %s", id, writeCap, p.text)},
+			{id + "r", fmt.Sprintf("r %sr %s %s", id, hexBytes(p.goW.bytes), p.text)},
+		}
+		out := runDriver(t, driver, i, reqs)
+		dartW, err := parseResult(out[id+"w"], len(steps))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if d := compareWrite(p, p.goW, dartW); d != "" {
+			t.Errorf("disagreement:\n%s", d)
+		}
+		dartR, err := parseResult(out[id+"r"], len(steps))
+		if err != nil {
+			t.Fatal(err)
+		}
+		canon := []string{hexBytes([]byte(s)), "-"}
+		if d := compareValues(p, "dart reading go's bytes", dartR.vals, canon); d != "" {
+			t.Errorf("disagreement:\n%s", d)
+		}
+	}
 }

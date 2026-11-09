@@ -147,13 +147,13 @@ final class BitWriter {
     _scratchBits = tailBits;
   }
 
-  /// Flushes any remaining bits in the scratch to memory. Call this once
-  /// after you have finished writing. The flush stores a full 8-byte word:
+  /// Flushes any remaining bits in the scratch to memory. Call this
+  /// after writing to make the partial word visible. The flush stores a full 8-byte word:
   /// the buffer size is a multiple of 8 so this stays in bounds, and bytes
   /// past the written data are only ever written as zeros.
   ///
-  /// flushBits ends the write: writing more bits after a mid-stream flush
-  /// corrupts the stream, because the flushed partial word cannot be resumed.
+  /// Flushing preserves the scratch word and write position, so writing
+  /// can continue afterward; flush again to store the updated partial word.
   @pragma('vm:prefer-inline')
   void flushBits() {
     if (_scratchBits != 0) {

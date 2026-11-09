@@ -377,7 +377,9 @@ String copyString(String source, int destSize) {
       length--;
     }
   }
-  return utf8.decode(Uint8List.sublistView(bytes, 0, length));
+  final kept = Uint8List.sublistView(bytes, 0, length);
+  final text = utf8.decode(kept);
+  return _startsWithByteOrderMark(kept) ? '\uFEFF$text' : text;
 }
 
 // ---------------------------------------------------------------------------

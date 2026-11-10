@@ -224,8 +224,6 @@ cd fuzz && go test -run TestDifferentialAgainstSerializeGo -v . -duration 60s
 tool/fuzz_negative_control.sh
 ```
 
-Benchmarking for the serialize family lives in [mas-bandwidth/schema](https://github.com/mas-bandwidth/schema)'s data-driven bench, which measures the generated codecs across every language on one corpus.
-
 ## License
 
 [BSD 3-Clause](LICENSE), © Más Bandwidth LLC.

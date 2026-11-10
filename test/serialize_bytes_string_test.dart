@@ -49,11 +49,7 @@ void run() {
       List<int>.filled(8, 0xA5),
       'canary before',
     );
-    expectBytes(
-      backing.sublist(32),
-      List<int>.filled(8, 0xA5),
-      'canary after',
-    );
+    expectBytes(backing.sublist(32), List<int>.filled(8, 0xA5), 'canary after');
   });
 
   test('streams reset over one mutated buffer for a second round trip', () {

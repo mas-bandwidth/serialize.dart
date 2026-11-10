@@ -124,7 +124,7 @@ String textOf(Uint8List data) {
   final text = utf8.decode(data);
   final bom =
       data.length >= 3 && data[0] == 0xEF && data[1] == 0xBB && data[2] == 0xBF;
-  return bom && !text.startsWith('﻿') ? '﻿$text' : text;
+  return bom ? '﻿$text' : text;
 }
 
 List<Step> parseSteps(Tokens t) {

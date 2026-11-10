@@ -240,6 +240,57 @@ void run() {
     }
   });
 
+  test('serializeString: measure counts UTF-8 bytes for every width', () {
+    // expected UTF-8 byte lengths, counted by hand from the code points
+    final cases = <String, int>{
+      '': 0,
+      'a': 1,
+      '\u007F': 1,
+      '\u0080': 2,
+      '\u00E9': 2,
+      '\u07FF': 2,
+      'e\u0301': 3,
+      '\u0800': 3,
+      '\uFFFF': 3,
+      '\uFEFF': 3,
+      '\u{10000}': 4,
+      '\u{1F680}': 4,
+      '\u{10FFFF}': 4,
+      'a\u00E9\u{1F680}': 7,
+    };
+    cases.forEach((value, byteLength) {
+      final measure = MeasureStream();
+      expect(measure.serializeString(Ref<String>(value), 32), 'measure');
+      // bufferSize 32: a 5-bit length, the worst-case 7 align bits, payload
+      expectEquals(
+        measure.bitsProcessed,
+        5 + 7 + byteLength * 8,
+        'measured bits for ${value.codeUnits}',
+      );
+      // the same byte length is what the writer emits after its length field
+      final writer = WriteStream(Uint8List(64));
+      expect(writer.serializeString(Ref<String>(value), 32), 'write');
+      expectEquals(
+        writer.bitsProcessed,
+        5 + ((8 - (5 & 7)) & 7) + byteLength * 8,
+        'written bits for ${value.codeUnits}',
+      );
+    });
+  });
+
+  test('serializeString: an empty string at buffer size 1 round trips', () {
+    final writer = WriteStream(Uint8List(8));
+    expect(writer.serializeString(Ref<String>(''), 1), 'write empty');
+    writer.flush();
+    final reader = ReadStream(writer.data());
+    final read = Ref<String>('unset');
+    expect(reader.serializeString(read, 1), 'read empty');
+    expectEquals(read.value, '', 'empty round trip');
+    final measure = MeasureStream();
+    expect(measure.serializeString(Ref<String>(''), 1), 'measure empty');
+    expectEquals(measure.bitsProcessed, 7, 'only the worst-case align');
+  });
+
   test('serializeAlign: a nonzero pad fails the read', () {
     final writer = WriteStream(Uint8List(8));
     writer.serializeBits(Ref<int>(3), 3);

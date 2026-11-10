@@ -326,6 +326,35 @@ bool _startsWithByteOrderMark(Uint8List bytes) =>
     only from asserts; compiled out in release, where the bytes after the
     misuse are unspecified (utf8.encode's U+FFFD is not documented behaviour).
 */
+// The UTF-8 byte length of [value], counted from its UTF-16 code units
+// without encoding it: below U+0080 one byte, below U+0800 two, a surrogate
+// pair four, and anything else three. A lone surrogate also counts three,
+// which is the size of the U+FFFD utf8.encode substitutes for it in release;
+// in the checked build a lone surrogate is caller misuse, asserted by the
+// callers through _isValidUtf16 before this count is relied on.
+int _utf8ByteLength(String value) {
+  var length = 0;
+  for (var i = 0; i < value.length; i++) {
+    final unit = value.codeUnitAt(i);
+    if (unit < 0x80) {
+      length += 1;
+    } else if (unit < 0x800) {
+      length += 2;
+    } else if (unit >= 0xD800 && unit <= 0xDBFF && i + 1 < value.length) {
+      final next = value.codeUnitAt(i + 1);
+      if (next >= 0xDC00 && next <= 0xDFFF) {
+        length += 4;
+        i++;
+      } else {
+        length += 3;
+      }
+    } else {
+      length += 3;
+    }
+  }
+  return length;
+}
+
 bool _isValidUtf16(String value) {
   var i = 0;
   while (i < value.length) {
@@ -848,8 +877,14 @@ final class WriteStream implements BitStream {
       final align = (8 - (afterLength & 7)) & 7;
       return lengthBits + align + encoded.length * 8 <= _writer.bitsAvailable;
     }(), 'string past the end of the buffer');
-    final length = Ref<int>(encoded.length);
-    serializeInt(length, 0, bufferSize - 1);
+    // the length field inlined from serializeInt over [0, bufferSize - 1],
+    // with its bounds checks, so no Ref<int> is allocated per call
+    assert(bufferSize - 1 <= _int32Max, 'int bounds are int32');
+    assert(bufferSize >= 1);
+    assert(encoded.length <= bufferSize - 1);
+    if (bufferSize != 1) {
+      _writer.writeBits(encoded.length, (bufferSize - 1).bitLength);
+    }
     serializeBytes(encoded);
     return true;
   }
@@ -1430,9 +1465,29 @@ final class ReadStream implements BitStream {
     if (bufferSize < 1) {
       return _refuse(Refusal.valueOutOfRange);
     }
-    final length = Ref<int>(0);
-    if (!serializeInt(length, 0, bufferSize - 1)) {
-      return false; // refused by the length field, which named the reason
+    // the length field inlined from serializeInt over [0, bufferSize - 1],
+    // with its refusal rules, so no Ref<int> is allocated per call
+    if (bufferSize - 1 > _int32Max) {
+      return _refuse(Refusal.valueOutOfRange);
+    }
+    final int length;
+    if (bufferSize == 1) {
+      // degenerate range: the value IS the range. Nothing is consumed, so
+      // the latch is the only thing that can refuse here
+      if (failed) {
+        return false;
+      }
+      length = 0;
+    } else {
+      final bits = (bufferSize - 1).bitLength;
+      if (_reader.wouldReadPastEnd(bits)) {
+        return _refuse(Refusal.pastEnd);
+      }
+      final unsignedValue = _reader.readBits(bits);
+      if (unsignedValue > bufferSize - 1) {
+        return _refuse(Refusal.valueOutOfRange);
+      }
+      length = unsignedValue;
     }
     // the payload is serialize_bytes: the align first, so set padding is
     // nonzero_padding even when the payload would also run past the end,
@@ -1442,10 +1497,10 @@ final class ReadStream implements BitStream {
     if (!serializeAlign()) {
       return false; // refused by the align, which named the reason
     }
-    if (length.value > _reader.bitsRemaining ~/ 8) {
+    if (length > _reader.bitsRemaining ~/ 8) {
       return _refuse(Refusal.pastEnd);
     }
-    final bytes = Uint8List(length.value);
+    final bytes = Uint8List(length);
     _reader.readBytes(bytes);
     // interior NUL first: NUL is valid UTF-8, so the validator below cannot
     // catch it, and a conforming writer is never handed one, so a zero byte
@@ -1871,11 +1926,18 @@ final class MeasureStream implements BitStream {
   bool serializeString(Ref<String> value, int bufferSize) {
     assert(_isValidUtf16(value.value));
     assert(!value.value.contains('\u0000'));
-    final encoded = utf8.encode(value.value);
-    assert(encoded.length < bufferSize);
-    final length = Ref<int>(encoded.length);
-    serializeInt(length, 0, bufferSize - 1);
-    serializeBytes(encoded);
+    // counted from the code units, not encoded: no Uint8List is allocated
+    // just to learn the byte length
+    final byteLength = _utf8ByteLength(value.value);
+    assert(byteLength < bufferSize);
+    // the length field inlined from serializeInt over [0, bufferSize - 1],
+    // with its bounds checks, so no Ref<int> is allocated per call either
+    assert(bufferSize - 1 <= _int32Max, 'int bounds are int32');
+    assert(bufferSize >= 1);
+    assert(byteLength <= bufferSize - 1);
+    _bitsWritten += bufferSize == 1 ? 0 : (bufferSize - 1).bitLength;
+    serializeAlign();
+    _bitsWritten += byteLength * 8;
     return true;
   }
 

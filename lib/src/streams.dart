@@ -1050,12 +1050,14 @@ final class ReadStream implements BitStream {
   Refusal? _refusal;
 
   /// Creates a read stream over the bitpacked data in [data]. Any length is
-  /// supported; no allocation slack past the data is required.
+  /// supported; no allocation slack past the data is required. The data must
+  /// not change while the stream is reading it.
   ReadStream(Uint8List data) : _reader = BitReader(data);
 
   /// Points the stream at a data array and clears all read state, including
   /// the failure latch and its reason: re-initialization is the one
   /// operation that clears a failure (STANDARD.md, "Reader Obligations").
+  /// The data must not change while the stream is reading it.
   void reset(Uint8List data) {
     _reader.reset(data);
     _refusal = null;

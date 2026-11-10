@@ -213,7 +213,8 @@ final class BitReader {
   int _tailWord; // the final 64-bit window, assembled at reset
 
   /// Creates a bit reader over the bitpacked data in [data]. Any length is
-  /// supported, and no slack past the data is required.
+  /// supported, and no slack past the data is required. The data must not
+  /// change while the reader is reading it.
   BitReader(Uint8List data)
     : _data = data,
       _view = ByteData.sublistView(data),

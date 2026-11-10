@@ -67,6 +67,8 @@ import (
 var (
 	sabotageWidenInt = flag.Bool("sabotage-widen-int", false,
 		"test only: the Go writer writes every non-degenerate int range one bit wider, so the differential must go red")
+	sabotageHostileRead = flag.Bool("sabotage-hostile-read", false,
+		"test only: refused mutant reads report touched destinations, so the hostile-read differential must go red")
 	seedFlag = flag.Uint64("seed", 0x5e7a11a15e7a11a1,
 		"the generator seed; round r draws from PCG(seed, r)")
 	durationFlag = flag.Duration("duration", 0,
@@ -877,7 +879,7 @@ func buildDriver(t *testing.T, root string) string {
 	return exe
 }
 
-func runDriver(t *testing.T, driver string, batch int, reqs []request) map[string][]string {
+func runDriver(t *testing.T, driver string, batch int, reqs []request, sabotageHostile bool) map[string][]string {
 	t.Helper()
 	dir := t.TempDir()
 	path := filepath.Join(dir, fmt.Sprintf("batch-%02d.txt", batch))
@@ -891,6 +893,9 @@ func runDriver(t *testing.T, driver string, batch int, reqs []request) map[strin
 	}
 	cmd := exec.Command(driver, path)
 	cmd.Dir = dir
+	if sabotageHostile {
+		cmd.Env = append(os.Environ(), "SERIALIZE_FUZZ_SABOTAGE=hostile-read")
+	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()
@@ -1048,7 +1053,7 @@ func TestDifferentialAgainstSerializeGo(t *testing.T) {
 				round, *seedFlag, *seedFlag, round)
 			break
 		}
-		if *sabotageWidenInt || *durationFlag <= 0 {
+		if *sabotageWidenInt || *sabotageHostileRead || *durationFlag <= 0 {
 			break
 		}
 		// stop before a round that would overrun the budget
@@ -1138,7 +1143,7 @@ func runRound(t *testing.T, driver string, seed uint64, round int) bool {
 				reqs = append(reqs, request{id + "m", fmt.Sprintf("r %sm %s %s", id, hexBytes(p.mutant), p.text)})
 			}
 		}
-		out := runDriver(t, driver, b, reqs)
+		out := runDriver(t, driver, b, reqs, *sabotageHostileRead)
 		get := func(id string, n int) result {
 			f, ok := out[id]
 			if !ok {
@@ -1225,7 +1230,7 @@ func runRound(t *testing.T, driver string, seed uint64, round int) bool {
 	// Go writer that widens each int range by one bit, through the same
 	// comparison, must go red.
 	controlRed := false
-	if !*sabotageWidenInt {
+	if !*sabotageWidenInt && !*sabotageHostileRead {
 		red, eligible := 0, 0
 		first := ""
 		for _, p := range progs {
@@ -1258,6 +1263,49 @@ func runRound(t *testing.T, driver string, seed uint64, round int) bool {
 			t.Errorf("round %d negative control: the int range widened by one bit went green on all %d programs with a widenable int", round, eligible)
 		} else if round == *roundsFrom {
 			t.Logf("round %d negative control: the int range widened by one bit went red on %d of %d programs with a widenable int; the first:\n%s", round, red, eligible, first)
+		}
+
+		// Hostile-read refusal / sentinel negative control: run the native Dart
+		// driver with SERIALIZE_FUZZ_SABOTAGE=hostile-read over refused mutants
+		// and verify that its destination-sentinel check reports touched:<kind>
+		// and goes red through compareReads.
+		var hostileReqs []request
+		var hostileProgs []*program
+		var hostileGo []result
+		for _, p := range progs {
+			if p.mutant == nil {
+				continue
+			}
+			goM := goRead(p.steps, p.mutant)
+			if goM.ok {
+				continue
+			}
+			id := strconv.Itoa(p.n) + "hm"
+			hostileReqs = append(hostileReqs, request{id, fmt.Sprintf("r %s %s %s", id, hexBytes(p.mutant), p.text)})
+			hostileProgs = append(hostileProgs, p)
+			hostileGo = append(hostileGo, goM)
+			if len(hostileReqs) >= 32 {
+				break
+			}
+		}
+		hostileRed, hostileEligible := 0, len(hostileReqs)
+		if hostileEligible > 0 {
+			hOut := runDriver(t, driver, -1, hostileReqs, true)
+			for idx, p := range hostileProgs {
+				id := hostileReqs[idx].id
+				dartH, err := parseResult(hOut[id], len(p.steps))
+				if err != nil {
+					t.Fatalf("round %d hostile-read control request %s: %v", round, id, err)
+				}
+				if strings.HasPrefix(dartH.kind, "touched:") &&
+					compareReads(p, "mutant ("+p.mutation+")", p.mutant, hostileGo[idx], dartH) != "" {
+					hostileRed++
+				}
+			}
+		}
+		if hostileEligible == 0 || hostileRed != hostileEligible {
+			controlRed = true
+			t.Errorf("round %d hostile-read negative control: %d of %d refused mutants went red via native driver", round, hostileRed, hostileEligible)
 		}
 	}
 	return len(disagreements) > 0 || controlRed

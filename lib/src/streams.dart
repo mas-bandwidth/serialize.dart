@@ -1015,7 +1015,8 @@ final class WriteStream implements BitStream {
 
   /// Flushes the stream to memory. Always call this after you finish
   /// writing and before you call [data]: the buffer's contents are
-  /// unspecified until then (IMPLEMENTING.md U11).
+  /// unspecified until then (IMPLEMENTING.md U11). A flush that stores a
+  /// partial word ends the write: a later write is write misuse, asserted.
   void flush() => _writer.flushBits();
 
   /// The written portion of the buffer: a view, not a copy. Call [flush]

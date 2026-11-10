@@ -59,8 +59,8 @@ jobs:
     name: test (Dart SDK floor 3.9.0)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dart-lang/setup-dart@v1
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262   # v4
+      - uses: dart-lang/setup-dart@6afc89df92d6eb3834022f73cd65adc8cdfcb92d   # v1
         with:
           sdk: 3.9.0
       - run: dart pub get
@@ -207,7 +207,7 @@ jobs:
     name: interop with the C++ reference
     runs-on: ubuntu-24.04
     env:
-      SERIALIZE_TAG: v2.1.1
+      SERIALIZE_TAG: v2.1.4
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262   # v4
       - uses: dart-lang/setup-dart@6afc89df92d6eb3834022f73cd65adc8cdfcb92d   # v1

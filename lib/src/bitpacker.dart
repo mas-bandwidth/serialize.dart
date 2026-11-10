@@ -33,6 +33,7 @@ final class BitWriter {
   int _scratchBits; // number of valid bits in scratch, in [0,63]
   int _numBits; // buffer capacity in bits
   int _wordIndex; // the next 8-byte word flushes to _data[_wordIndex * 8]
+  bool _ended; // a flush stored a partial word: writing is over (U11)
 
   // The bit index is not a stored field: it is _wordIndex * 64 + _scratchBits
   // by construction — every write path maintains that invariant — so the hot
@@ -46,7 +47,8 @@ final class BitWriter {
       _scratch = 0,
       _scratchBits = 0,
       _numBits = buffer.length * 8,
-      _wordIndex = 0 {
+      _wordIndex = 0,
+      _ended = false {
     assert(buffer.length % 8 == 0);
   }
 
@@ -63,6 +65,7 @@ final class BitWriter {
     _scratchBits = 0;
     _numBits = buffer.length * 8;
     _wordIndex = 0;
+    _ended = false;
   }
 
   /// Writes the low [bits] bits of [value] to the buffer, without padding to
@@ -72,6 +75,7 @@ final class BitWriter {
   /// caller contract violation, asserted in debug.
   @pragma('vm:prefer-inline')
   void writeBits(int value, int bits) {
+    assert(!_ended, 'write after a flush that stored a partial word (U11)');
     assert(bits >= 1 && bits <= 32);
     assert(bitsWritten + bits <= _numBits);
 
@@ -117,6 +121,7 @@ final class BitWriter {
   /// as if its bytes had gone through the packer.
   void writeBytes(Uint8List data) {
     final bytes = data.length;
+    assert(!_ended, 'write after a flush that stored a partial word (U11)');
     final startBits = bitsWritten;
     assert(startBits % 8 == 0);
     assert(startBits + bytes * 8 <= _numBits);
@@ -152,12 +157,15 @@ final class BitWriter {
   /// the buffer size is a multiple of 8 so this stays in bounds, and bytes
   /// past the written data are only ever written as zeros.
   ///
-  /// Flushing preserves the scratch word and write position, so writing
-  /// can continue afterward; flush again to store the updated partial word.
+  /// A flush that stores a partial word ends the write: a later write is
+  /// write misuse (IMPLEMENTING.md U11), asserted in debug, until [reset].
+  /// A flush with no partial word to store (at a 64-bit boundary) stores
+  /// nothing and ends nothing.
   @pragma('vm:prefer-inline')
   void flushBits() {
     if (_scratchBits != 0) {
       _view.setUint64(_wordIndex * 8, _scratch, Endian.little);
+      _ended = true;
     }
   }
 

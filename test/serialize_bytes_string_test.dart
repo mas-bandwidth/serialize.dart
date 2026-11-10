@@ -26,6 +26,26 @@ void run() {
     expectBytes(readBack, payload, 'payload');
   });
 
+  test('streams reset over one mutated buffer for a second round trip', () {
+    final buffer = Uint8List(32);
+    final writer = WriteStream(buffer);
+    expect(writer.serializeString(Ref<String>('first'), 32), 'write first');
+    writer.flush();
+    final reader = ReadStream(buffer);
+    final first = Ref<String>('unset');
+    expect(reader.serializeString(first, 32), 'read first');
+    expectEquals(first.value, 'first', 'first value');
+
+    buffer.fillRange(0, buffer.length, 0);
+    writer.reset(buffer);
+    expect(writer.serializeString(Ref<String>('second'), 32), 'write second');
+    writer.flush();
+    reader.reset(buffer);
+    final second = Ref<String>('unset');
+    expect(reader.serializeString(second, 32), 'read second');
+    expectEquals(second.value, 'second', 'second value');
+  });
+
   test(
     'serializeBytes: a zero count still aligns, and verifies the padding',
     () {

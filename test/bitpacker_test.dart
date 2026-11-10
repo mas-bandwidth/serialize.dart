@@ -166,6 +166,55 @@ void run() {
     expectEquals(reader.bitsRead, poisoned, 'no bits consumed');
   });
 
+  test('round trip over a view at a non-zero byte offset, with canaries', () {
+    final backing = Uint8List(32)..fillRange(0, 32, 0xA5);
+    final slice = Uint8List.sublistView(backing, 5, 21);
+    final writer = BitWriter(slice);
+    writer.writeBits(0x2D, 6);
+    writer.writeBits(0xDEADBEEF, 32);
+    writer.writeBits(0x1F, 5);
+    writer.flushBits();
+
+    final reader = BitReader(slice);
+    expectEquals(reader.readBits(6), 0x2D, 'head');
+    expectEquals(reader.readBits(32), 0xDEADBEEF, 'middle');
+    expectEquals(reader.readBits(5), 0x1F, 'tail');
+    expectEquals(reader.bitsRead, writer.bitsWritten, 'bit accounting');
+
+    expectBytes(
+      backing.sublist(0, 5),
+      List<int>.filled(5, 0xA5),
+      'canary before',
+    );
+    expectBytes(
+      backing.sublist(21),
+      List<int>.filled(11, 0xA5),
+      'canary after',
+    );
+  });
+
+  test('reset reuses one buffer through mutation and a second round trip', () {
+    final buffer = Uint8List(16);
+    final writer = BitWriter(buffer);
+    writer.writeBits(0xAB, 8);
+    writer.writeBits(0xCDEF, 16);
+    writer.flushBits();
+
+    final reader = BitReader(buffer);
+    expectEquals(reader.readBits(8), 0xAB, 'first head');
+    expectEquals(reader.readBits(16), 0xCDEF, 'first tail');
+
+    buffer.fillRange(0, buffer.length, 0);
+    writer.reset(buffer);
+    writer.writeBits(0x12, 8);
+    writer.writeBits(0x3456, 16);
+    writer.flushBits();
+
+    reader.reset(buffer);
+    expectEquals(reader.readBits(8), 0x12, 'second head');
+    expectEquals(reader.readBits(16), 0x3456, 'second tail');
+  });
+
   test('round trip: mixed widths across several words', () {
     final buffer = Uint8List(64);
     final writer = BitWriter(buffer);

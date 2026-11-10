@@ -27,8 +27,7 @@ const Set<String> _allowed = {
 };
 
 bool _matchesExpectedExports(Set<String> shown) =>
-    shown.difference(_allowed).isEmpty &&
-    _allowed.difference(shown).isEmpty;
+    shown.difference(_allowed).isEmpty && _allowed.difference(shown).isEmpty;
 
 void run() {
   test('U15: export set comparison checks every expected symbol', () {

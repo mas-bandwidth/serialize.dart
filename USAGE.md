@@ -281,8 +281,10 @@ Unsigned 64-bit values ride bit-transparently in Dart's signed int:
 `0xFFFFFFFFFFFFFFFF` and `-1` are the same bits, and the wire neither
 knows nor cares. The `Int128` / `UInt128` pairs are two's complement
 `(hi, lo)` halves with the arithmetic, shift and comparison operators the
-serialize surface needs; `fromInt` sign-extends, `toSigned()` /
-`toUnsigned()` reinterpret bit-transparently.
+serialize surface needs. `fromInt` sign-extends a signed value, so for an
+unsigned 64-bit pattern held in a Dart int use `UInt128(0, value)` or
+`UInt128.fromUint64(value)`, which zero-extend the high half;
+`toSigned()` / `toUnsigned()` reinterpret bit-transparently.
 
 ## Floats and doubles: finite, every one bit exact
 

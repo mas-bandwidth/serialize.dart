@@ -219,6 +219,89 @@ void run() {
     );
   });
 
+  test('U11: a write after a flush that stored a partial word is misuse', () {
+    // three bits written, then a flush that stores the partial word: every
+    // write path that moves a bit after it is caught before the bit moves
+    WriteStream flushed() {
+      final writer = WriteStream(Uint8List(32));
+      writer.serializeBits(Ref<int>(5), 3);
+      writer.flush();
+      return writer;
+    }
+
+    final paths = <String, void Function(WriteStream)>{
+      'bits': (w) => w.serializeBits(Ref<int>(1), 8),
+      'bits64': (w) => w.serializeBits64(Ref<int>(1), 40),
+      'int': (w) => w.serializeInt(Ref<int>(3), 0, 10),
+      'int64': (w) => w.serializeInt64(Ref<int>(3), 0, 1 << 40),
+      'int128': (w) => w.serializeInt128(
+        Ref<Int128>(Int128.zero),
+        Int128.zero,
+        Int128.fromInt(10),
+      ),
+      'uint128': (w) => w.serializeUint128(Ref<UInt128>(UInt128.zero)),
+      'bool': (w) => w.serializeBool(Ref<bool>(true)),
+      'float': (w) => w.serializeFloat(Ref<double>(1.5)),
+      'double': (w) => w.serializeDouble(Ref<double>(1.5)),
+      'compressed float': (w) =>
+          w.serializeCompressedFloat(Ref<double>(1.5), 0, 10, 0.01),
+      'align': (w) => w.serializeAlign(),
+      'zero-length bytes': (w) => w.serializeBytes(Uint8List(0)),
+      'bytes': (w) => w.serializeBytes(Uint8List(2)),
+      'string': (w) => w.serializeString(Ref<String>('hi'), 16),
+      'int_relative': (w) => w.serializeIntRelative(10, Ref<int>(11)),
+      'fixed': (w) => w.serializeFixed(Ref<int>(0), 8, 8, 0, 10),
+      'fixed128': (w) =>
+          w.serializeFixed128(Ref<Int128>(Int128.zero), 64, 64, 0, 10),
+    };
+    for (final entry in paths.entries) {
+      final writer = flushed();
+      _expectMisuse(
+        '${entry.key} after flush',
+        writer,
+        () => entry.value(writer),
+      );
+    }
+
+    // the bitpacker underneath, at a byte-aligned partial word
+    final bitPaths = <String, void Function(BitWriter)>{
+      'BitWriter.writeBits': (b) => b.writeBits(1, 1),
+      'BitWriter.writeBytes': (b) => b.writeBytes(Uint8List(1)),
+      'BitWriter.writeBytes zero-length': (b) => b.writeBytes(Uint8List(0)),
+    };
+    for (final entry in bitPaths.entries) {
+      if (!assertsEnabled) {
+        break;
+      }
+      final bits = BitWriter(Uint8List(16));
+      bits.writeBits(0xAB, 8);
+      bits.flushBits();
+      expectThrows(() => entry.value(bits), '${entry.key} after flush');
+      expectEquals(bits.bitsWritten, 8, '${entry.key}: no bits moved');
+    }
+  });
+
+  test('U11: a flush that stored nothing, or a reset, ends no write', () {
+    // a flush at a word boundary has no partial word to store
+    final writer = WriteStream(Uint8List(16));
+    writer.flush();
+    writer.serializeBits64(Ref<int>(-1), 64);
+    writer.flush();
+    expect(writer.serializeBits(Ref<int>(0xAB), 8), 'write after flush');
+    writer.flush();
+    expectEquals(writer.bytesProcessed, 9, 'nine bytes');
+    expectEquals(writer.data()[8], 0xAB, 'the late byte landed');
+
+    // reset starts a new write
+    final reused = BitWriter(Uint8List(8));
+    reused.writeBits(5, 3);
+    reused.flushBits();
+    reused.reset(Uint8List(8));
+    reused.writeBits(0xCD, 8);
+    reused.flushBits();
+    expectEquals(reused.data()[0], 0xCD, 'written after reset');
+  });
+
   test('U14: the refusal-name function spells the family names', () {
     expectEquals(refusalName(null), 'none', 'no refusal');
     for (final reason in Refusal.values) {

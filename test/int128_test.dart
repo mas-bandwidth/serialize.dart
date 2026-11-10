@@ -47,4 +47,32 @@ void run() {
     expectEquals(rendered.contains('-'), false, 'no sign character ever');
     expectEquals(rendered.length, 34, '0x plus 32 digits');
   });
+
+  test('UInt128.fromUint64: unsigned 64-bit pattern in lo, zero hi', () {
+    expectEquals(
+      UInt128.fromUint64(0).toString(),
+      '0x00000000000000000000000000000000',
+      'zero',
+    );
+    expectEquals(
+      UInt128.fromUint64(0x7FFFFFFFFFFFFFFF).toString(),
+      '0x00000000000000007fffffffffffffff',
+      'top bit clear',
+    );
+    expectEquals(
+      UInt128.fromUint64(-1).toString(),
+      '0x0000000000000000ffffffffffffffff',
+      'all ones stays unsigned',
+    );
+    expectEquals(
+      UInt128.fromUint64(-0x8000000000000000).toString(),
+      '0x00000000000000008000000000000000',
+      'top bit set stays unsigned',
+    );
+    expectEquals(
+      UInt128(0, 0xFFFFFFFFFFFFFFFF).toString(),
+      '0x0000000000000000ffffffffffffffff',
+      'explicit halves',
+    );
+  });
 }

@@ -26,6 +26,12 @@ value has exactly one encoding: floats are finite, a packet ends at its
 `end`, and every refusal names its rule. Every finite value 1.1 carried keeps
 its exact bytes; `wstring` is gone. Release 2.0.0 is the first to carry it.
 
+If you would rather not write serialize functions by hand,
+[Schema](https://github.com/mas-bandwidth/schema) generates them for Dart
+and many other languages from one definition of your data. The code it
+generates for Dart carries its own bit reader and writer, so it does not
+need this library.
+
 If this library helps you, **[please support it](https://www.patreon.com/MasBandwidth/membership)**
 
 ## Getting it

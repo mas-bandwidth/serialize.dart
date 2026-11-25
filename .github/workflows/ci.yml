@@ -17,6 +17,13 @@ jobs:
       - run: dart run test/all.dart
       - run: dart --enable-asserts run test/all.dart
 
+      # The same suite as a native AOT release executable, the mode production
+      # Flutter/Dart native release builds ship.
+      - name: AOT release executable
+        run: |
+          dart compile exe test/all.dart -o build/all_aot
+          ./build/all_aot
+
       # The negative controls: a reader with one refusal rule deleted must
       # fail exactly the vectors conformance-controls/<rule>.expected names,
       # once per rule, and a vector whose operation has no runner must go red.

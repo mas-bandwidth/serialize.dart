@@ -49,7 +49,7 @@ bool get assertsEnabled {
 void expectThrows(void Function() body, String message) {
   try {
     body();
-  } catch (_) {
+  } on AssertionError {
     return;
   }
   _failed++;

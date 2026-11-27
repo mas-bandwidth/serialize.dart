@@ -30,6 +30,12 @@ void run() {
       (grin, 5, 'a'),
       (grin, 6, grin),
       ('abc', 1, ''),
+      ('\uFEFFgo', 64, '\uFEFFgo'),
+      ('\uFEFF', 64, '\uFEFF'),
+      ('\uFEFF\uFEFFgo', 64, '\uFEFF\uFEFFgo'),
+      ('\uFEFFabcdef', 6, '\uFEFFab'),
+      ('\uFEFFabcdef', 4, '\uFEFF'),
+      ('\uFEFFabcdef', 3, ''),
     ];
     for (final (source, destSize, expected) in cases) {
       expectEquals(
@@ -46,6 +52,9 @@ void run() {
       'a\u0000bc',
       _bytes(const [0xC3, 0xA9, 0xC3, 0xA9]),
       _bytes(const [0x61, 0xF0, 0x9F, 0x98, 0x80]),
+      '\uFEFFgo',
+      '\uFEFF',
+      '\uFEFF\uFEFFgo',
       'x' * 40,
     ];
     for (final source in sources) {

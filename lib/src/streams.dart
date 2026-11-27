@@ -326,6 +326,35 @@ bool _startsWithByteOrderMark(Uint8List bytes) =>
     only from asserts; compiled out in release, where the bytes after the
     misuse are unspecified (utf8.encode's U+FFFD is not documented behaviour).
 */
+// The UTF-8 byte length of [value], counted from its UTF-16 code units
+// without encoding it: below U+0080 one byte, below U+0800 two, a surrogate
+// pair four, and anything else three. A lone surrogate also counts three,
+// which is the size of the U+FFFD utf8.encode substitutes for it in release;
+// in the checked build a lone surrogate is caller misuse, asserted by the
+// callers through _isValidUtf16 before this count is relied on.
+int _utf8ByteLength(String value) {
+  var length = 0;
+  for (var i = 0; i < value.length; i++) {
+    final unit = value.codeUnitAt(i);
+    if (unit < 0x80) {
+      length += 1;
+    } else if (unit < 0x800) {
+      length += 2;
+    } else if (unit >= 0xD800 && unit <= 0xDBFF && i + 1 < value.length) {
+      final next = value.codeUnitAt(i + 1);
+      if (next >= 0xDC00 && next <= 0xDFFF) {
+        length += 4;
+        i++;
+      } else {
+        length += 3;
+      }
+    } else {
+      length += 3;
+    }
+  }
+  return length;
+}
+
 bool _isValidUtf16(String value) {
   var i = 0;
   while (i < value.length) {
@@ -377,7 +406,9 @@ String copyString(String source, int destSize) {
       length--;
     }
   }
-  return utf8.decode(Uint8List.sublistView(bytes, 0, length));
+  final kept = Uint8List.sublistView(bytes, 0, length);
+  final text = utf8.decode(kept);
+  return _startsWithByteOrderMark(kept) ? '\uFEFF$text' : text;
 }
 
 // ---------------------------------------------------------------------------
@@ -572,6 +603,7 @@ final class WriteStream implements BitStream {
   bool serializeBits64(Ref<int> value, int bits) {
     assert(bits >= 1 && bits <= 64);
     assert(valueFitsInBits(value.value, bits));
+    assert(bits <= _writer.bitsAvailable);
     if (bits <= 32) {
       _writer.writeBits(value.value, bits);
     } else {
@@ -613,6 +645,7 @@ final class WriteStream implements BitStream {
     if (bits == 0) {
       return true; // degenerate range: the value IS the range, nothing to send
     }
+    assert(bits <= _writer.bitsAvailable);
     // subtract in the unsigned domain: wraps when the range is wider than 2^63
     final unsignedValue = value.value - min;
     if (bits <= 32) {
@@ -649,6 +682,7 @@ final class WriteStream implements BitStream {
   void _writeGroups(UInt128 offset, int bits) {
     // 32-bit groups, least significant first: the same convention as
     // serialize_bits, serialize_uint64 and the wide fixed point path
+    assert(bits <= _writer.bitsAvailable);
     final group0 = offset.lo & 0xFFFFFFFF;
     final group1 = offset.lo >>> 32;
     final group2 = offset.hi & 0xFFFFFFFF;
@@ -686,6 +720,7 @@ final class WriteStream implements BitStream {
   /// Writes an unsigned 128-bit integer: 128 raw bits, the low 64-bit half
   /// first, then the high half, each as serialize_bits(half, 64).
   bool serializeUint128(Ref<UInt128> value) {
+    assert(128 <= _writer.bitsAvailable);
     _writer.writeBits(value.value.lo & 0xFFFFFFFF, 32);
     _writer.writeBits(value.value.lo >>> 32, 32);
     _writer.writeBits(value.value.hi & 0xFFFFFFFF, 32);
@@ -718,6 +753,7 @@ final class WriteStream implements BitStream {
   bool serializeDouble(Ref<double> value) {
     final bits = float64BitsFromDouble(value.value);
     assert(float64BitsAreFinite(bits));
+    assert(64 <= _writer.bitsAvailable);
     _writer.writeBits(bits & 0xFFFFFFFF, 32);
     _writer.writeBits(bits >>> 32, 32);
     return true;
@@ -795,7 +831,7 @@ final class WriteStream implements BitStream {
     // fused or widened arithmetic changes the wire.
     final scaled = fround(normalized * fround(maxIntegerValue.toDouble()));
     var integerValue = fround(scaled + 0.5).floor();
-    // STANDARD.md: the integer clamp is normative (2026-08-23, schema#109).
+    // STANDARD.md: the integer clamp is normative.
     // Once maxIntegerValue >= 2^23 the float32 ulp at the top of the range
     // reaches 1, so the rounded sum can exceed maxIntegerValue itself.
     if (integerValue > maxIntegerValue) {
@@ -841,8 +877,14 @@ final class WriteStream implements BitStream {
       final align = (8 - (afterLength & 7)) & 7;
       return lengthBits + align + encoded.length * 8 <= _writer.bitsAvailable;
     }(), 'string past the end of the buffer');
-    final length = Ref<int>(encoded.length);
-    serializeInt(length, 0, bufferSize - 1);
+    // the length field inlined from serializeInt over [0, bufferSize - 1],
+    // with its bounds checks, so no Ref<int> is allocated per call
+    assert(bufferSize - 1 <= _int32Max, 'int bounds are int32');
+    assert(bufferSize >= 1);
+    assert(encoded.length <= bufferSize - 1);
+    if (bufferSize != 1) {
+      _writer.writeBits(encoded.length, (bufferSize - 1).bitLength);
+    }
     serializeBytes(encoded);
     return true;
   }
@@ -919,6 +961,7 @@ final class WriteStream implements BitStream {
     final offset = value.value - params.rawMin;
     assert(!unsignedGreaterThan(offset, params.rawRange));
     final bits = params.bits;
+    assert(bits <= _writer.bitsAvailable);
     if (bits <= 32) {
       _writer.writeBits(offset, bits);
     } else {
@@ -972,7 +1015,8 @@ final class WriteStream implements BitStream {
 
   /// Flushes the stream to memory. Always call this after you finish
   /// writing and before you call [data]: the buffer's contents are
-  /// unspecified until then (IMPLEMENTING.md U11).
+  /// unspecified until then (IMPLEMENTING.md U11). A flush that stores a
+  /// partial word ends the write: a later write is write misuse, asserted.
   void flush() => _writer.flushBits();
 
   /// The written portion of the buffer: a view, not a copy. Call [flush]
@@ -1007,12 +1051,14 @@ final class ReadStream implements BitStream {
   Refusal? _refusal;
 
   /// Creates a read stream over the bitpacked data in [data]. Any length is
-  /// supported; no allocation slack past the data is required.
+  /// supported; no allocation slack past the data is required. The data must
+  /// not change while the stream is reading it.
   ReadStream(Uint8List data) : _reader = BitReader(data);
 
   /// Points the stream at a data array and clears all read state, including
   /// the failure latch and its reason: re-initialization is the one
   /// operation that clears a failure (STANDARD.md, "Reader Obligations").
+  /// The data must not change while the stream is reading it.
   void reset(Uint8List data) {
     _reader.reset(data);
     _refusal = null;
@@ -1422,9 +1468,29 @@ final class ReadStream implements BitStream {
     if (bufferSize < 1) {
       return _refuse(Refusal.valueOutOfRange);
     }
-    final length = Ref<int>(0);
-    if (!serializeInt(length, 0, bufferSize - 1)) {
-      return false; // refused by the length field, which named the reason
+    // the length field inlined from serializeInt over [0, bufferSize - 1],
+    // with its refusal rules, so no Ref<int> is allocated per call
+    if (bufferSize - 1 > _int32Max) {
+      return _refuse(Refusal.valueOutOfRange);
+    }
+    final int length;
+    if (bufferSize == 1) {
+      // degenerate range: the value IS the range. Nothing is consumed, so
+      // the latch is the only thing that can refuse here
+      if (failed) {
+        return false;
+      }
+      length = 0;
+    } else {
+      final bits = (bufferSize - 1).bitLength;
+      if (_reader.wouldReadPastEnd(bits)) {
+        return _refuse(Refusal.pastEnd);
+      }
+      final unsignedValue = _reader.readBits(bits);
+      if (unsignedValue > bufferSize - 1) {
+        return _refuse(Refusal.valueOutOfRange);
+      }
+      length = unsignedValue;
     }
     // the payload is serialize_bytes: the align first, so set padding is
     // nonzero_padding even when the payload would also run past the end,
@@ -1434,10 +1500,10 @@ final class ReadStream implements BitStream {
     if (!serializeAlign()) {
       return false; // refused by the align, which named the reason
     }
-    if (length.value > _reader.bitsRemaining ~/ 8) {
+    if (length > _reader.bitsRemaining ~/ 8) {
       return _refuse(Refusal.pastEnd);
     }
-    final bytes = Uint8List(length.value);
+    final bytes = Uint8List(length);
     _reader.readBytes(bytes);
     // interior NUL first: NUL is valid UTF-8, so the validator below cannot
     // catch it, and a conforming writer is never handed one, so a zero byte
@@ -1863,11 +1929,18 @@ final class MeasureStream implements BitStream {
   bool serializeString(Ref<String> value, int bufferSize) {
     assert(_isValidUtf16(value.value));
     assert(!value.value.contains('\u0000'));
-    final encoded = utf8.encode(value.value);
-    assert(encoded.length < bufferSize);
-    final length = Ref<int>(encoded.length);
-    serializeInt(length, 0, bufferSize - 1);
-    serializeBytes(encoded);
+    // counted from the code units, not encoded: no Uint8List is allocated
+    // just to learn the byte length
+    final byteLength = _utf8ByteLength(value.value);
+    assert(byteLength < bufferSize);
+    // the length field inlined from serializeInt over [0, bufferSize - 1],
+    // with its bounds checks, so no Ref<int> is allocated per call either
+    assert(bufferSize - 1 <= _int32Max, 'int bounds are int32');
+    assert(bufferSize >= 1);
+    assert(byteLength <= bufferSize - 1);
+    _bitsWritten += bufferSize == 1 ? 0 : (bufferSize - 1).bitLength;
+    serializeAlign();
+    _bitsWritten += byteLength * 8;
     return true;
   }
 

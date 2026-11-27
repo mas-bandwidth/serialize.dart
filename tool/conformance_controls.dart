@@ -30,6 +30,8 @@
 //
 //  - the int_relative bounded tiers carry their payload's ranged int inline,
 //    so ranged-range and ranged-reconstruction delete the rule there too;
+//  - the string reader carries its length field's ranged int inline, so
+//    ranged-range deletes the rule there too;
 //  - a fixed point field's degenerate read exists for 64-bit and 128-bit
 //    storage, as the reference's two specializations do;
 //  - the string reader's strict UTF-8 decoder is a second guard behind the
@@ -114,6 +116,11 @@ const List<_Control> _controls = [
         _streams,
         '        if (offset > tierMax - tierMin) {',
         '        if (offset > tierMax - tierMin + 0xFFFFFFFF) {$_deleted',
+      ),
+      _Patch(
+        _streams,
+        '      if (unsignedValue > bufferSize - 1) {',
+        '      if (unsignedValue > bufferSize - 1 + 0xFFFFFFFF) {$_deleted',
       ),
     ],
   ),

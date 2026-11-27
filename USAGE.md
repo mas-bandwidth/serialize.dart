@@ -132,11 +132,11 @@ same declarations are caller error, asserted in the checked build.
 **A refused read leaves its destination unwritten.** The `Ref` holder you
 passed still holds exactly what it held before the call, so a caller that
 trusts the holder over the return code is never handed a value the stream
-did not carry. Two things the rule does not reach: `serializeBytes` and
-`serializeString` read into a buffer you own, and its contents after a
-refusal are unspecified; and a sequence of reads over
-an object or an array may leave earlier members written, because the rule
-is per primitive read.
+did not carry. On a refused string read the caller's `Ref<String>`
+holder is left untouched. One exception: `serializeBytes` reads into
+a buffer you own, whose contents after a refusal are unspecified; and
+a sequence of reads over an object or an array may leave earlier
+members written, because the rule is per primitive read.
 
 **A failure is terminal.** Nothing after the failing operation has a
 defined position, so the stream latches: `failed` becomes true, and every
@@ -169,8 +169,8 @@ On the write side there is one misuse mechanism, the trap (reference
 IMPLEMENTING.md U9), and in Dart the trap is `assert`. Caller contracts
 (bit counts in range, values within their declared ranges, `serializeInt` bounds within int32, min ≤ max,
 well-formed string payloads, buffers whose length is a multiple of 8
-bytes, room in the buffer for the whole of a `bytes` or `string` before
-any of it is written, finite `float`, `double` and `compressed_float`
+bytes, room in the buffer for the whole of a `bytes`, `string` or
+multi-group 64- or 128-bit write before any of it is written, finite `float`, `double` and `compressed_float`
 values, `reject()` only on a read) are `assert` statements, the Dart form
 of the family's debug asserts. A `MeasureStream` makes every check a
 `WriteStream` makes except room and buffer size (U6). Write misuse never
@@ -281,8 +281,10 @@ Unsigned 64-bit values ride bit-transparently in Dart's signed int:
 `0xFFFFFFFFFFFFFFFF` and `-1` are the same bits, and the wire neither
 knows nor cares. The `Int128` / `UInt128` pairs are two's complement
 `(hi, lo)` halves with the arithmetic, shift and comparison operators the
-serialize surface needs; `fromInt` sign-extends, `toSigned()` /
-`toUnsigned()` reinterpret bit-transparently.
+serialize surface needs. `fromInt` sign-extends a signed value, so for an
+unsigned 64-bit pattern held in a Dart int use `UInt128(0, value)` or
+`UInt128.fromUint64(value)`, which zero-extend the high half;
+`toSigned()` / `toUnsigned()` reinterpret bit-transparently.
 
 ## Floats and doubles: finite, every one bit exact
 
@@ -481,8 +483,8 @@ every read, an end on a failed stream refuses with the first reason.
 `serializeIntRelative(previous, ref)` prices strictly increasing
 sequences — sequence numbers, ack chains. `current > previous` always, no
 wrapping. A difference of 1 costs a single bit; small differences ride
-payload tiers of 5/8/13/18/23 bits; past the ladder, six zero flags carry
-`current` itself as 32 raw bits.
+payload tiers of 3/5/9/13/17 bits (5/8/13/18/23 bits total with flags);
+past the ladder, six zero flags carry `current` itself as 32 raw bits.
 
 **The domain is 0 to 2^31 - 1 inclusive**, for both
 `previous` and `current`. It belongs to the operation, not to Dart's int:

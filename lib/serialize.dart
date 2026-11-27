@@ -1,5 +1,5 @@
 /// Bitpacked binary serialization for Dart: the serialize wire format 2.0,
-/// byte-identical to the C, C++, C#, Go, Rust and JavaScript
+/// byte-identical to the C, C++, C#, Go, Rust, JavaScript, Java and Elixir
 /// implementations. STANDARD.md is the authority on every byte.
 ///
 /// The public surface is the one reference IMPLEMENTING.md U15 allows: the

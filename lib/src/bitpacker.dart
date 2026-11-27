@@ -33,6 +33,7 @@ final class BitWriter {
   int _scratchBits; // number of valid bits in scratch, in [0,63]
   int _numBits; // buffer capacity in bits
   int _wordIndex; // the next 8-byte word flushes to _data[_wordIndex * 8]
+  bool _ended; // a flush stored a partial word: writing is over (U11)
 
   // The bit index is not a stored field: it is _wordIndex * 64 + _scratchBits
   // by construction — every write path maintains that invariant — so the hot
@@ -46,7 +47,8 @@ final class BitWriter {
       _scratch = 0,
       _scratchBits = 0,
       _numBits = buffer.length * 8,
-      _wordIndex = 0 {
+      _wordIndex = 0,
+      _ended = false {
     assert(buffer.length % 8 == 0);
   }
 
@@ -63,6 +65,7 @@ final class BitWriter {
     _scratchBits = 0;
     _numBits = buffer.length * 8;
     _wordIndex = 0;
+    _ended = false;
   }
 
   /// Writes the low [bits] bits of [value] to the buffer, without padding to
@@ -72,6 +75,7 @@ final class BitWriter {
   /// caller contract violation, asserted in debug.
   @pragma('vm:prefer-inline')
   void writeBits(int value, int bits) {
+    assert(!_ended, 'write after a flush that stored a partial word (U11)');
     assert(bits >= 1 && bits <= 32);
     assert(bitsWritten + bits <= _numBits);
 
@@ -117,6 +121,7 @@ final class BitWriter {
   /// as if its bytes had gone through the packer.
   void writeBytes(Uint8List data) {
     final bytes = data.length;
+    assert(!_ended, 'write after a flush that stored a partial word (U11)');
     final startBits = bitsWritten;
     assert(startBits % 8 == 0);
     assert(startBits + bytes * 8 <= _numBits);
@@ -147,17 +152,20 @@ final class BitWriter {
     _scratchBits = tailBits;
   }
 
-  /// Flushes any remaining bits in the scratch to memory. Call this once
-  /// after you have finished writing. The flush stores a full 8-byte word:
+  /// Flushes any remaining bits in the scratch to memory. Call this
+  /// after writing to make the partial word visible. The flush stores a full 8-byte word:
   /// the buffer size is a multiple of 8 so this stays in bounds, and bytes
   /// past the written data are only ever written as zeros.
   ///
-  /// flushBits ends the write: writing more bits after a mid-stream flush
-  /// corrupts the stream, because the flushed partial word cannot be resumed.
+  /// A flush that stores a partial word ends the write: a later write is
+  /// write misuse (IMPLEMENTING.md U11), asserted in debug, until [reset].
+  /// A flush with no partial word to store (at a 64-bit boundary) stores
+  /// nothing and ends nothing.
   @pragma('vm:prefer-inline')
   void flushBits() {
     if (_scratchBits != 0) {
       _view.setUint64(_wordIndex * 8, _scratch, Endian.little);
+      _ended = true;
     }
   }
 
@@ -213,7 +221,8 @@ final class BitReader {
   int _tailWord; // the final 64-bit window, assembled at reset
 
   /// Creates a bit reader over the bitpacked data in [data]. Any length is
-  /// supported, and no slack past the data is required.
+  /// supported, and no slack past the data is required. The data must not
+  /// change while the reader is reading it.
   BitReader(Uint8List data)
     : _data = data,
       _view = ByteData.sublistView(data),
@@ -301,8 +310,10 @@ final class BitReader {
   bool readAlign() {
     final remainderBits = _bitsRead % 8;
     if (remainderBits != 0) {
-      // this cannot read past the end: numBits is a multiple of 8, so an
-      // unaligned bit index is always strictly inside the final byte
+      // a poisoned reader sits past the end, unaligned: refuse it
+      if (wouldReadPastEnd(8 - remainderBits)) {
+        return false;
+      }
       final value = readBits(8 - remainderBits);
       assert(_bitsRead % 8 == 0);
       if (value != 0) {

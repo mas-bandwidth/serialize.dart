@@ -26,6 +26,52 @@ void run() {
     expectBytes(readBack, payload, 'payload');
   });
 
+  test('streams round trip through a view at a non-zero byte offset', () {
+    final backing = Uint8List(40)..fillRange(0, 40, 0xA5);
+    final slice = Uint8List.sublistView(backing, 8, 32);
+    final payload = Uint8List.fromList(const [0xDE, 0xAD, 0xBE, 0xEF]);
+
+    final writer = WriteStream(slice);
+    writer.serializeBits(Ref<int>(7), 3);
+    writer.serializeBytes(payload);
+    writer.flush();
+
+    final reader = ReadStream(slice);
+    final head = Ref<int>(0);
+    expect(reader.serializeBits(head, 3), 'read head');
+    expectEquals(head.value, 7, 'head value');
+    final readBack = Uint8List(payload.length);
+    expect(reader.serializeBytes(readBack), 'read payload');
+    expectBytes(readBack, payload, 'payload');
+
+    expectBytes(
+      backing.sublist(0, 8),
+      List<int>.filled(8, 0xA5),
+      'canary before',
+    );
+    expectBytes(backing.sublist(32), List<int>.filled(8, 0xA5), 'canary after');
+  });
+
+  test('streams reset over one mutated buffer for a second round trip', () {
+    final buffer = Uint8List(32);
+    final writer = WriteStream(buffer);
+    expect(writer.serializeString(Ref<String>('first'), 32), 'write first');
+    writer.flush();
+    final reader = ReadStream(buffer);
+    final first = Ref<String>('unset');
+    expect(reader.serializeString(first, 32), 'read first');
+    expectEquals(first.value, 'first', 'first value');
+
+    buffer.fillRange(0, buffer.length, 0);
+    writer.reset(buffer);
+    expect(writer.serializeString(Ref<String>('second'), 32), 'write second');
+    writer.flush();
+    reader.reset(buffer);
+    final second = Ref<String>('unset');
+    expect(reader.serializeString(second, 32), 'read second');
+    expectEquals(second.value, 'second', 'second value');
+  });
+
   test(
     'serializeBytes: a zero count still aligns, and verifies the padding',
     () {
@@ -238,6 +284,57 @@ void run() {
         'measure ${value.codeUnits}',
       );
     }
+  });
+
+  test('serializeString: measure counts UTF-8 bytes for every width', () {
+    // expected UTF-8 byte lengths, counted by hand from the code points
+    final cases = <String, int>{
+      '': 0,
+      'a': 1,
+      '\u007F': 1,
+      '\u0080': 2,
+      '\u00E9': 2,
+      '\u07FF': 2,
+      'e\u0301': 3,
+      '\u0800': 3,
+      '\uFFFF': 3,
+      '\uFEFF': 3,
+      '\u{10000}': 4,
+      '\u{1F680}': 4,
+      '\u{10FFFF}': 4,
+      'a\u00E9\u{1F680}': 7,
+    };
+    cases.forEach((value, byteLength) {
+      final measure = MeasureStream();
+      expect(measure.serializeString(Ref<String>(value), 32), 'measure');
+      // bufferSize 32: a 5-bit length, the worst-case 7 align bits, payload
+      expectEquals(
+        measure.bitsProcessed,
+        5 + 7 + byteLength * 8,
+        'measured bits for ${value.codeUnits}',
+      );
+      // the same byte length is what the writer emits after its length field
+      final writer = WriteStream(Uint8List(64));
+      expect(writer.serializeString(Ref<String>(value), 32), 'write');
+      expectEquals(
+        writer.bitsProcessed,
+        5 + ((8 - (5 & 7)) & 7) + byteLength * 8,
+        'written bits for ${value.codeUnits}',
+      );
+    });
+  });
+
+  test('serializeString: an empty string at buffer size 1 round trips', () {
+    final writer = WriteStream(Uint8List(8));
+    expect(writer.serializeString(Ref<String>(''), 1), 'write empty');
+    writer.flush();
+    final reader = ReadStream(writer.data());
+    final read = Ref<String>('unset');
+    expect(reader.serializeString(read, 1), 'read empty');
+    expectEquals(read.value, '', 'empty round trip');
+    final measure = MeasureStream();
+    expect(measure.serializeString(Ref<String>(''), 1), 'measure empty');
+    expectEquals(measure.bitsProcessed, 7, 'only the worst-case align');
   });
 
   test('serializeAlign: a nonzero pad fails the read', () {

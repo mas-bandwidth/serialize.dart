@@ -7,8 +7,8 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dart-lang/setup-dart@v1
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262   # v4
+      - uses: dart-lang/setup-dart@6afc89df92d6eb3834022f73cd65adc8cdfcb92d   # v1
         with:
           sdk: 3.13.2
       - run: dart pub get
@@ -16,6 +16,17 @@ jobs:
       - run: dart format --output=none --set-exit-if-changed .
       - run: dart run test/all.dart
       - run: dart --enable-asserts run test/all.dart
+
+      # The same corpus in the compilation mode a production Flutter/Dart
+      # native release ships: a whole-program native AOT executable from
+      # `dart compile exe`, where asserts are compiled out and the optimizer
+      # sees every call site. The two steps above run the JIT; this is the
+      # release build, and it has to pass too.
+      - name: The corpus passes as a native AOT release executable
+        run: |
+          mkdir -p build
+          dart compile exe test/all.dart -o build/test_all
+          ./build/test_all
 
       # The negative controls: a reader with one refusal rule deleted must
       # fail exactly the vectors conformance-controls/<rule>.expected names,
@@ -27,7 +38,7 @@ jobs:
       # The web target: the corpus under dart2wasm, where Dart's int stays a
       # 64-bit integer, and dart2js refusing to build the library, since its
       # int is a JavaScript double that would round wide values.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020   # v4
         with:
           node-version: 26.7.0
       - name: The corpus passes on the web target
@@ -39,6 +50,23 @@ jobs:
       # half (lib/src/float32.dart), which only the web target can show.
       - name: Float/double write-then-read fuzz on the web target
         run: dart run tool/web_float_fuzz.dart 1 1000000
+
+  # The SDK floor: pubspec.yaml (sdk: ^3.9.0) and README.md state Dart
+  # SDK 3.9 or newer, while every other job pins 3.13.2. This job runs the
+  # test suite on the stated minimum (3.9.0), so the floor is measured
+  # rather than asserted. Keep its sdk in sync with the pubspec floor.
+  sdk-floor:
+    name: test (Dart SDK floor 3.9.0)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262   # v4
+      - uses: dart-lang/setup-dart@6afc89df92d6eb3834022f73cd65adc8cdfcb92d   # v1
+        with:
+          sdk: 3.9.0
+      - run: dart pub get
+      - run: dart analyze --fatal-infos --fatal-warnings
+      - run: dart run test/all.dart
+      - run: dart --enable-asserts run test/all.dart
 
   # The fuzz smoke: the C++ reference runs libFuzzer for 60 s on every push;
   # Dart has no native coverage-guided fuzzer, so this port runs the family's
@@ -55,12 +83,12 @@ jobs:
     name: fuzz (differential vs serialize.go, 60 s smoke)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dart-lang/setup-dart@v1
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262   # v4
+      - uses: dart-lang/setup-dart@6afc89df92d6eb3834022f73cd65adc8cdfcb92d   # v1
         with:
           sdk: 3.13.2
       - run: dart pub get
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff   # v5
         with:
           go-version-file: fuzz/go.mod
           cache-dependency-path: fuzz/go.sum
@@ -81,7 +109,7 @@ jobs:
     name: STANDARD.md and conformance/ match upstream
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262   # v4
 
       # STANDARD.md and conformance/ here are VERBATIM VENDORED COPIES of the
       # wire-format specification and the shared conformance corpus that live
@@ -179,10 +207,10 @@ jobs:
     name: interop with the C++ reference
     runs-on: ubuntu-24.04
     env:
-      SERIALIZE_TAG: v2.1.1
+      SERIALIZE_TAG: v2.1.4
     steps:
-      - uses: actions/checkout@v4
-      - uses: dart-lang/setup-dart@v1
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262   # v4
+      - uses: dart-lang/setup-dart@6afc89df92d6eb3834022f73cd65adc8cdfcb92d   # v1
         with:
           sdk: 3.13.2
       - run: dart pub get

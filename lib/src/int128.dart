@@ -3,10 +3,11 @@
 // Dart has no native 128-bit integer, so the 128-bit serialize surface speaks
 // these types, mirroring the C# port's Int128Value / UInt128Value (decision:
 // one API everywhere, so wire behavior cannot diverge by platform). The
-// operation set is exactly what the serialize paths need — add, subtract,
+// operation set includes add, subtract,
 // shifts, or, and, compares, word casts — implemented as two's-complement
 // math on (hi, lo) 64-bit halves held bit-transparently in Dart ints.
-// Nothing speculative: no mul/div/parse. toString is hex, for diagnostics.
+// Some operators are conveniences beyond the serialize paths. There is no
+// multiplication, division or parsing; toString is hex, for diagnostics.
 
 import 'bits.dart';
 
@@ -34,9 +35,16 @@ final class UInt128 {
   /// The unsigned 128-bit maximum.
   static const UInt128 maxValue = UInt128(allOnes64, allOnes64);
 
+  /// Constructs from an unsigned 64-bit pattern held in a Dart int: the high
+  /// half is zero and [lo] fills the low half bit-transparently.
+  const UInt128.fromUint64(int lo) : this(0, lo);
+
   /// Constructs from a 64-bit value, sign-extending: the conversion from a
   /// signed 64-bit integer, matching the C# port's implicit conversion from
-  /// long. For a non-negative value this zero-extends.
+  /// long. For a non-negative value this zero-extends, and for a negative
+  /// value the high half is all ones. An unsigned 64-bit pattern held in a
+  /// Dart int may be negative (values >= 2^63 are), so pass it through
+  /// [UInt128.fromUint64] or `UInt128(0, value)`, which zero-extend.
   factory UInt128.fromInt(int value) =>
       UInt128(value < 0 ? allOnes64 : 0, value);
 

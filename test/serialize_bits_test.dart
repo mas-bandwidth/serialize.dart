@@ -120,8 +120,8 @@ void run() {
       !ReadStream(Uint8List(4)).serializeBits64(read, 33),
       '33 bits from 32',
     );
-    // the second half of a 64-bit read past the end: partial consumption is
-    // terminal for the stream, per the reference's group-by-group checks
+    // The reader checks the whole 64-bit field before consuming either group;
+    // a 40-bit buffer is refused without reading the low group.
     final reader = ReadStream(Uint8List(5));
     expect(!reader.serializeBits64(read, 64), '64 bits from 40');
     expect(

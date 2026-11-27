@@ -1394,7 +1394,7 @@ func checkLeadingByteOrderMarks(t *testing.T, driver string) {
 			{id + "w", fmt.Sprintf("w %sw %d %s", id, writeCap, p.text)},
 			{id + "r", fmt.Sprintf("r %sr %s %s", id, hexBytes(p.goW.bytes), p.text)},
 		}
-		out := runDriver(t, driver, i, reqs)
+		out := runDriver(t, driver, i, reqs, false)
 		dartW, err := parseResult(out[id+"w"], len(steps))
 		if err != nil {
 			t.Fatal(err)
